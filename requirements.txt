@@ -1,0 +1,12 @@
+openai 
+tiktoken 
+tabulate
+flask
+numpy
+pandas
+requests
+PyMuPDF
+python-dotenv
+llama_cloud_services
+llama-index
+llama-parse

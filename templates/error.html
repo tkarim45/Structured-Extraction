@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Error</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <h2>Dashboard</h2>
+      <nav>
+        <ul>
+          <li><a href="/" data-page="home">Home</a></li>
+          <li><a href="/" data-page="upload">Upload</a></li>
+          <li><a href="/" data-page="files" class="active">Files</a></li>
+        </ul>
+      </nav>
+    </div>
+
+    <div class="main-content">
+      <div class="page active">
+        <h1>Error</h1>
+        <p>{{ message }}</p>
+        <a href="/" class="back-btn">Back to Dashboard</a>
+      </div>
+    </div>
+  </body>
+</html>

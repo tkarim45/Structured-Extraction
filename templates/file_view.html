@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>File View - {{ filename }}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <h2>Dashboard</h2>
+      <nav>
+        <ul>
+          <li><a href="/" data-page="home">Home</a></li>
+          <li><a href="/" data-page="upload">Upload</a></li>
+          <li><a href="/" data-page="files" class="active">Files</a></li>
+        </ul>
+      </nav>
+    </div>
+
+    <div class="main-content">
+      <div class="page active">
+        <h1>File: {{ filename }}</h1>
+        <a href="/" class="back-btn">Back to Dashboard</a>
+        <div class="table-container">
+          <table id="file-content-table">
+            <thead>
+              <tr>
+                {% for header in headers %}
+                <th>{{ header }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in data %}
+              <tr>
+                {% for header in headers %} {% if header == "Role Assigned To" %}
+                <td class="role-cell">
+                  <input type="text" class="role-input" data-row-index="{{ loop.index0 }}" value="{{ row[header] }}" />
+                  <button class="save-btn" data-row-index="{{ loop.index0 }}">Save</button>
+                </td>
+                {% else %}
+                <td>{{ row[header] }}</td>
+                {% endif %} {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <script src="/static/file_view.js"></script>
+  </body>
+</html>

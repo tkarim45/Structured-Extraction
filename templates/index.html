@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Processing Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <h2>Dashboard</h2>
+      <nav>
+        <ul>
+          <li><a href="#" data-page="home" class="active">Home</a></li>
+          <li><a href="#" data-page="upload">Upload</a></li>
+          <li><a href="#" data-page="files">Files</a></li>
+        </ul>
+      </nav>
+    </div>
+
+    <div class="main-content">
+      <div id="home" class="page active">
+        <h1>Welcome to PDF Processor</h1>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <h3>Daily Avg Uploads</h3>
+            <p id="daily-avg">0</p>
+          </div>
+          <div class="metric-card">
+            <h3>Weekly Uploads</h3>
+            <p id="weekly-uploads">0</p>
+          </div>
+          <div class="metric-card">
+            <h3>Total Uploads</h3>
+            <p id="total-uploads">0</p>
+          </div>
+          <div class="metric-card">
+            <h3>Unique Documents</h3>
+            <p id="unique-docs">0</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="upload" class="page">
+        <h1>Upload PDF</h1>
+        <form id="upload-form">
+          <input type="file" id="pdf-file" accept=".pdf" required />
+          <button type="submit">Upload</button>
+        </form>
+        <p id="upload-status"></p>
+      </div>
+
+      <div id="files" class="page">
+        <h1>Processed Files</h1>
+        <div class="filters">
+          <select id="sort-by">
+            <option value="">Sort By</option>
+            <option value="document_id">Sort by ID</option>
+            <option value="status">Sort by Status</option>
+          </select>
+          <select id="filter-status">
+            <option value="">Filter by Status</option>
+            <option value="Processing">Processing</option>
+            <option value="Completed">Completed</option>
+            <option value="Failed">Failed</option>
+          </select>
+          <select id="filter-deadline">
+            <option value="">All Deadlines</option>
+            <option value="2023-10-01">2023-10-01</option>
+          </select>
+          <button id="reset-filters">Reset</button>
+        </div>
+        <table id="files-table">
+          <thead>
+            <tr>
+              <th>Document ID</th>
+              <th>Filename</th>
+              <th>Upload Date</th>
+              <th>Size (KB)</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <script src="/static/script.js"></script>
+  </body>
+</html>
