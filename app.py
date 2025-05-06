@@ -76,7 +76,7 @@ def parse_rbi_directions(raw_data):
             Chapter: <chapter_num> - <chapter_title>|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
 
             Text:
-            {text}
+            {text[:4000]}
 
             Example output:
             Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: a) These Directions.... - 1. First point text - 1.a) Sub-point text - 1.a)i) Sub-sub-point text
@@ -122,7 +122,7 @@ def parse_rbi_directions(raw_data):
             You are a data extraction assistant. Below is a section of a regulatory document appendix in plain text format, extracted from a PDF. Extract all points, including nested sub-points (e.g., 1., a), i)), and format them as a hierarchical list using bullet points. Preserve the numbering/lettering and include all text for each point. Return the result as a plain text string with each point on a new line.
 
             Text:
-            {text}
+            {text[:4000]}
 
             Example output:
             - 1. First point text
@@ -179,6 +179,74 @@ def parse_rbi_directions(raw_data):
 
     logger.info(f"Completed RBI directions parsing with {len(rows)} rows")
     return pd.DataFrame(rows, columns=columns)
+
+
+# Function to enhance CSV with Summary and Action Item
+def enhance_csv_with_summary_and_action(csv_path):
+    logger.info(f"Enhancing CSV with Summary and Action Item: {csv_path}")
+    try:
+        df = pd.read_csv(csv_path)
+        if df.empty:
+            logger.error(f"CSV is empty: {csv_path}")
+            return False
+
+        # Initialize new columns
+        df["Summary"] = ""
+        df["Action Item"] = ""
+
+        for index, row in df.iterrows():
+            sub_section = row["Sub Section"]
+            if pd.isna(sub_section) or not sub_section.strip():
+                logger.warning(f"Empty Sub-Section at index {index}")
+                continue
+
+            prompt = f"""
+                You are a compliance assistant. Below is a subsection from a regulatory document. Your task is to:
+                1. Summarize the subsection in one concise sentence (max 50 words).
+                2. Provide a specific action item to address the subsection's requirements.
+
+                Sub-Section:
+                {sub_section[:1000]}
+
+                Return the result as a plain text string in the format:
+                Summary: <one-line summary>|Action Item: <specific action>
+
+                Example output:
+                Summary: Entities must implement multi-factor authentication by 2023.|Action Item: Deploy MFA across all systems by Q4 2023.
+            """
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a precise compliance assistant.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=100,
+                )
+                result = response.choices[0].message.content.strip()
+                if "|" in result:
+                    summary, action = result.split("|", 1)
+                    df.at[index, "Summary"] = summary.replace("Summary:", "").strip()
+                    df.at[index, "Action Item"] = action.replace(
+                        "Action Item:", ""
+                    ).strip()
+                else:
+                    logger.warning(
+                        f"Invalid response format for index {index}: {result}"
+                    )
+            except Exception as e:
+                logger.error(f"Error processing Sub-Section at index {index}: {str(e)}")
+
+        # Save updated CSV
+        df.to_csv(csv_path, index=False, encoding="utf-8")
+        logger.info(f"Successfully enhanced CSV with {len(df)} rows")
+        return True
+    except Exception as e:
+        logger.error(f"Error enhancing CSV {csv_path}: {str(e)}")
+        return False
 
 
 @app.route("/")
@@ -265,6 +333,8 @@ def upload_file():
                             "2023-10-01",
                             "Regulated Entities",
                             "Compliance Team",
+                            "",  # Placeholder for Summary
+                            "",  # Placeholder for Action Item
                         ]
                     )
 
@@ -288,9 +358,18 @@ def upload_file():
                             "Effective_Date",
                             "Applicability",
                             "Role Assigned To",
+                            "Summary",
+                            "Action Item",
                         ]
                     )
                     writer.writerows(structured_data)
+
+                # Enhance CSV with Summary and Action Item
+                logger.info(f"Enhancing CSV with summary and action items: {csv_path}")
+                if not enhance_csv_with_summary_and_action(csv_path):
+                    logger.error(f"Failed to enhance CSV: {csv_path}")
+                    file_status[csv_filename] = "Failed"
+                    return
 
                 # Verify CSV file
                 if not os.path.exists(csv_path):
@@ -376,6 +455,8 @@ def get_file_content(filename):
             "Effective_Date",
             "Applicability",
             "Role Assigned To",
+            "Summary",
+            "Action Item",
         ]
         if not all(col in df.columns for col in expected_columns):
             logger.error(f"Invalid CSV structure: {filename}")
@@ -412,6 +493,8 @@ def view_file(filename):
             "Effective_Date",
             "Applicability",
             "Role Assigned To",
+            "Summary",
+            "Action Item",
         ]
         if not all(col in df.columns for col in expected_columns):
             logger.error(f"Invalid CSV structure: {filename}")
@@ -467,6 +550,7 @@ def get_metrics():
     logger.info("Calculating metrics")
     today = datetime.now().date()
     week_ago = today - timedelta(days=7)
+    dates = [(today - timedelta(days=x)).strftime("%Y-%m-%d") for x in range(6, -1, -1)]
 
     try:
         files = os.listdir(app.config["EXCEL_SHEETS"])
@@ -476,6 +560,7 @@ def get_metrics():
                     os.path.getctime(os.path.join(app.config["EXCEL_SHEETS"], f))
                 ).date(),
                 "filename": f,
+                "status": file_status.get(f, "Completed"),
             }
             for f in files
             if f.endswith(".csv")
@@ -492,6 +577,12 @@ def get_metrics():
                     "weekly_uploads": 0,
                     "total_uploads": 0,
                     "unique_documents": 0,
+                    "daily_uploads": {date: 0 for date in dates},
+                    "status_distribution": {
+                        "Processing": 0,
+                        "Completed": 0,
+                        "Failed": 0,
+                    },
                 }
             )
 
@@ -502,6 +593,23 @@ def get_metrics():
             len(df["filename"].unique()) if "filename" in df.columns else 0
         )
 
+        # Calculate daily uploads for the past 7 days
+        daily_uploads = {}
+        for date in dates:
+            date_obj = datetime.strptime(date, "%Y-%m-%d").date()
+            count = len(df[df["date"] == date_obj]) if "date" in df.columns else 0
+            daily_uploads[date] = count
+
+        # Calculate status distribution
+        status_counts = (
+            df["status"].value_counts().to_dict() if "status" in df.columns else {}
+        )
+        status_distribution = {
+            "Processing": status_counts.get("Processing", 0),
+            "Completed": status_counts.get("Completed", 0),
+            "Failed": status_counts.get("Failed", 0),
+        }
+
         logger.info("Metrics calculated successfully")
         return jsonify(
             {
@@ -509,6 +617,8 @@ def get_metrics():
                 "weekly_uploads": weekly_uploads,
                 "total_uploads": total_uploads,
                 "unique_documents": unique_documents,
+                "daily_uploads": daily_uploads,
+                "status_distribution": status_distribution,
             }
         )
     except Exception as e:

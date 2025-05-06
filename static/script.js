@@ -1,31 +1,32 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const navLinks = document.querySelectorAll(".sidebar nav a");
   const pages = document.querySelectorAll(".page");
+  const navLinks = document.querySelectorAll(".sidebar nav a");
   const uploadForm = document.getElementById("upload-form");
   const uploadStatus = document.getElementById("upload-status");
-  const sortBy = document.getElementById("sort-by");
-  const filterStatus = document.getElementById("filter-status");
-  const filterDeadline = document.getElementById("filter-deadline");
-  const resetFilters = document.getElementById("reset-filters");
-  let filesData = [];
+  const filesTableBody = document.querySelector("#files-table tbody");
+  const sortBySelect = document.getElementById("sort-by");
+  const filterStatusSelect = document.getElementById("filter-status");
+  const filterDeadlineSelect = document.getElementById("filter-deadline");
+  const resetFiltersButton = document.getElementById("reset-filters");
 
-  // Page navigation
+  // Chart contexts
+  const dailyUploadsChart = document.getElementById("daily-uploads-chart").getContext("2d");
+  const statusChart = document.getElementById("status-chart").getContext("2d");
+  let dailyChartInstance, statusChartInstance;
+
+  // Navigation
   navLinks.forEach((link) => {
     link.addEventListener("click", (e) => {
       e.preventDefault();
-      const pageId = link.dataset.page;
-
+      const pageId = link.getAttribute("data-page");
+      pages.forEach((page) => page.classList.remove("active"));
+      document.getElementById(pageId).classList.add("active");
       navLinks.forEach((l) => l.classList.remove("active"));
       link.classList.add("active");
-
-      pages.forEach((page) => page.classList.remove("active"));
-      const targetPage = document.getElementById(pageId);
-      targetPage.classList.add("active");
-
       if (pageId === "files") {
-        loadFiles();
+        fetchFiles();
       } else if (pageId === "home") {
-        loadMetrics();
+        fetchMetrics();
       }
     });
   });
@@ -33,137 +34,173 @@ document.addEventListener("DOMContentLoaded", () => {
   // Upload form
   uploadForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const formData = new FormData();
     const fileInput = document.getElementById("pdf-file");
-
+    const formData = new FormData();
     formData.append("file", fileInput.files[0]);
 
+    uploadStatus.textContent = "Uploading...";
     try {
-      uploadStatus.textContent = "Uploading...";
       const response = await fetch("/api/upload", {
         method: "POST",
         body: formData,
       });
-      const data = await response.json();
-
+      const result = await response.json();
       if (response.ok) {
-        uploadStatus.textContent = `Success: ${data.message}`;
-        uploadForm.reset();
-        pollFileStatus(data.csv_path);
+        uploadStatus.textContent = `Upload started: ${result.filename}`;
+        Toastify({
+          text: "File upload started!",
+          duration: 3000,
+          style: { background: "green" },
+        }).showToast();
       } else {
-        uploadStatus.textContent = `Error: ${data.error}`;
+        uploadStatus.textContent = `Error: ${result.error}`;
+        Toastify({
+          text: `Error: ${result.error}`,
+          duration: 3000,
+          style: { background: "red" },
+        }).showToast();
       }
     } catch (error) {
-      uploadStatus.textContent = `Error: Failed to upload file - ${error.message}`;
-      console.error("Upload error:", error);
+      uploadStatus.textContent = `Error: ${error.message}`;
+      Toastify({
+        text: `Error: ${error.message}`,
+        duration: 3000,
+        style: { background: "red" },
+      }).showToast();
     }
   });
 
-  // Poll file status
-  function pollFileStatus(filename) {
-    const interval = setInterval(async () => {
-      try {
-        const response = await fetch("/api/files");
-        const files = await response.json();
-        const file = files.find((f) => f.filename === filename);
-        if (file && file.status !== "Processing") {
-          clearInterval(interval);
-          loadFiles();
-        }
-      } catch (error) {
-        console.error("Error polling file status:", error);
-      }
-    }, 2000);
-  }
-
-  // Load metrics
-  async function loadMetrics() {
+  // Fetch and display metrics
+  async function fetchMetrics() {
     try {
       const response = await fetch("/api/metrics");
-      const data = await response.json();
+      const metrics = await response.json();
+      document.getElementById("daily-avg").textContent = metrics.daily_avg_uploads;
+      document.getElementById("weekly-uploads").textContent = metrics.weekly_uploads;
+      document.getElementById("total-uploads").textContent = metrics.total_uploads;
+      document.getElementById("unique-docs").textContent = metrics.unique_documents;
 
-      document.getElementById("daily-avg").textContent = data.daily_avg_uploads;
-      document.getElementById("weekly-uploads").textContent = data.weekly_uploads;
-      document.getElementById("total-uploads").textContent = data.total_uploads;
-      document.getElementById("unique-docs").textContent = data.unique_documents;
+      // Destroy existing charts if they exist
+      if (dailyChartInstance) dailyChartInstance.destroy();
+      if (statusChartInstance) statusChartInstance.destroy();
+
+      // Daily Uploads Bar Chart
+      dailyChartInstance = new Chart(dailyUploadsChart, {
+        type: "bar",
+        data: {
+          labels: Object.keys(metrics.daily_uploads),
+          datasets: [
+            {
+              label: "Uploads",
+              data: Object.values(metrics.daily_uploads),
+              backgroundColor: "rgba(75, 192, 192, 0.2)",
+              borderColor: "rgba(75, 192, 192, 1)",
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: "Number of Uploads" } },
+            x: { title: { display: true, text: "Date" } },
+          },
+          plugins: { legend: { display: false } },
+        },
+      });
+
+      // Status Distribution Pie Chart
+      statusChartInstance = new Chart(statusChart, {
+        type: "pie",
+        data: {
+          labels: ["Processing", "Completed", "Failed"],
+          datasets: [
+            {
+              data: [metrics.status_distribution.Processing, metrics.status_distribution.Completed, metrics.status_distribution.Failed],
+              backgroundColor: ["#FFCE56", "#36A2EB", "#FF6384"],
+              hoverOffset: 4,
+            },
+          ],
+        },
+        options: {
+          plugins: {
+            legend: { position: "bottom" },
+            title: { display: true, text: "File Status Distribution" },
+          },
+        },
+      });
     } catch (error) {
-      console.error("Error loading metrics:", error);
+      console.error("Error fetching metrics:", error);
     }
   }
 
-  // Load files
-  async function loadFiles() {
+  // Fetch and display files
+  async function fetchFiles() {
     try {
       const response = await fetch("/api/files");
-      filesData = await response.json();
-      renderFiles(filesData);
+      const files = await response.json();
+      renderFiles(files);
     } catch (error) {
-      console.error("Error loading files:", error);
+      console.error("Error fetching files:", error);
+      Toastify({
+        text: `Error fetching files: ${error.message}`,
+        duration: 3000,
+        style: { background: "red" },
+      }).showToast();
     }
   }
 
-  // Render files with filters
   function renderFiles(files) {
-    const tbody = document.querySelector("#files-table tbody");
-    tbody.innerHTML = "";
+    let filteredFiles = [...files];
 
-    files.forEach((file) => {
-      const row = document.createElement("tr");
-      row.innerHTML = `
-              <td>${file.document_id}</td>
-              <td>${file.filename}</td>
-              <td>${file.upload_date}</td>
-              <td>${(file.size / 1024).toFixed(2)}</td>
-              <td class="status-${file.status.toLowerCase()}">${file.status}</td>
-              <td><a href="/file/${file.filename}" class="view-btn" ${file.status !== "Completed" ? "disabled" : ""}>View</a></td>
-          `;
-      tbody.appendChild(row);
-    });
-  }
-
-  // Filter and sort
-  function applyFilters() {
-    let filteredFiles = [...filesData];
-
-    // Filter by status
-    const statusFilter = filterStatus.value;
+    // Apply filters
+    const statusFilter = filterStatusSelect.value;
+    const deadlineFilter = filterDeadlineSelect.value;
     if (statusFilter) {
       filteredFiles = filteredFiles.filter((file) => file.status === statusFilter);
     }
-
-    // Filter by deadline (assuming Effective_Date is used)
-    const deadlineFilter = filterDeadline.value;
     if (deadlineFilter) {
-      filteredFiles = filteredFiles.filter((file) => file.status === "Completed");
+      filteredFiles = filteredFiles.filter((file) => file.filename.includes(deadlineFilter));
     }
 
-    // Sort
-    const sortValue = sortBy.value;
-    if (sortValue) {
+    // Apply sorting
+    const sortBy = sortBySelect.value;
+    if (sortBy) {
       filteredFiles.sort((a, b) => {
-        if (sortValue === "document_id") {
+        if (sortBy === "document_id") {
           return a.document_id.localeCompare(b.document_id);
-        } else if (sortValue === "status") {
+        } else if (sortBy === "status") {
           return a.status.localeCompare(b.status);
         }
         return 0;
       });
     }
 
-    renderFiles(filteredFiles);
+    filesTableBody.innerHTML = "";
+    filteredFiles.forEach((file) => {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${file.document_id}</td>
+        <td>${file.filename}</td>
+        <td>${file.upload_date}</td>
+        <td>${(file.size / 1024).toFixed(2)}</td>
+        <td>${file.status}</td>
+        <td><a href="/file/${file.filename}" class="view-btn">View</a></td>
+      `;
+      filesTableBody.appendChild(row);
+    });
   }
 
-  // Filter and sort listeners
-  sortBy.addEventListener("change", applyFilters);
-  filterStatus.addEventListener("change", applyFilters);
-  filterDeadline.addEventListener("change", applyFilters);
-  resetFilters.addEventListener("click", () => {
-    sortBy.value = "";
-    filterStatus.value = "";
-    filterDeadline.value = "";
-    renderFiles(filesData);
+  // Filter and sort handlers
+  sortBySelect.addEventListener("change", fetchFiles);
+  filterStatusSelect.addEventListener("change", fetchFiles);
+  filterDeadlineSelect.addEventListener("change", fetchFiles);
+  resetFiltersButton.addEventListener("click", () => {
+    sortBySelect.value = "";
+    filterStatusSelect.value = "";
+    filterDeadlineSelect.value = "";
+    fetchFiles();
   });
 
-  // Initial load
-  loadMetrics();
+  // Initial fetch
+  fetchMetrics();
 });
