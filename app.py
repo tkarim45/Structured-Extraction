@@ -35,14 +35,10 @@ logger.info("Application directories initialized")
 # Load environment variables
 dotenv.load_dotenv()
 openai_client = AzureChatOpenAI(
-    azure_deployment=os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-35-turbo"),
-    api_version=os.getenv("OPENAI_API_VERSION", "2023-06-01-preview"),
+    azure_deployment=os.getenv("AZURE_DEPLOYMENT_NAME"),
+    api_version=os.getenv("OPENAI_API_VERSION"),
     api_key=os.getenv("OPENAI_API_KEY"),
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    temperature=0,
-    max_tokens=None,
-    timeout=None,
-    max_retries=2,
 )
 logger.info("Environment variables loaded and AzureChatOpenAI initialized")
 
@@ -93,7 +89,7 @@ Chapter: {section_num} - {section_title}|Section No.: <number>|Section: <title>|
 Identify subsections by numbers (e.g., '1.1', '1.1.1') or labels (e.g., 'a)', '(i)'). If the structure is unclear, infer based on context. Ensure each entry is on a new line. If no subsections are found, return an empty string.
 
 Input Text:
-{text[:4000]}
+{text}
 
 Example Output:
 Chapter: 1 - Purpose|Section No.: 1.1|Section: Operational Risk|Sub-Section: 1.1 Effective management of Operational Risk...
@@ -161,7 +157,7 @@ Chapter: <section_num> - <section_title>|Section No.: <number>|Section: <title>|
 If no clear section structure is found, treat top-level numbered items as sections and nested items as subsections. Ensure each entry is on a new line. If no data is found, return an empty string.
 
 Input Text:
-{raw_data[:8000]}
+{raw_data}
 
 Example Output:
 Chapter: 1 - Purpose|Section No.: 1.1|Section: Operational Risk|Sub-Section: 1.1 Effective management of Operational Risk...
@@ -224,7 +220,7 @@ You are a compliance assistant. Below is a subsection from a regulatory document
 2. Provide a specific action item to address the subsection's requirements.
 
 Sub-Section:
-{sub_section[:1000]}
+{sub_section}
 
 Return the result as:
 Summary: <one-line summary>|Action Item: <specific action>
