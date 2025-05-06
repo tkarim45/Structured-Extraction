@@ -11,3 +11,5 @@ llama_cloud_services
 llama-index
 llama-parse
 PyPDF2
+langchain_openai
+pdfplumber

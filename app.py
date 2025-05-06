@@ -4,13 +4,13 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 import nest_asyncio
-import PyPDF2
+import pdfplumber
 import re
-from openai import OpenAI
 import dotenv
 import csv
 import logging
 import threading
+from langchain_openai import AzureChatOpenAI
 
 # Configure logging
 logging.basicConfig(
@@ -34,8 +34,17 @@ logger.info("Application directories initialized")
 
 # Load environment variables
 dotenv.load_dotenv()
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-logger.info("Environment variables loaded")
+openai_client = AzureChatOpenAI(
+    azure_deployment=os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-35-turbo"),
+    api_version=os.getenv("OPENAI_API_VERSION", "2023-06-01-preview"),
+    api_key=os.getenv("OPENAI_API_KEY"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    temperature=0,
+    max_tokens=None,
+    timeout=None,
+    max_retries=2,
+)
+logger.info("Environment variables loaded and AzureChatOpenAI initialized")
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
@@ -49,51 +58,62 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-# Function to parse raw data using GPT API
+# Function to clean text (remove problematic characters)
+def clean_text(text):
+    return re.sub(r"[^\x00-\x7F]+", " ", text).strip()
+
+
+# Function to parse raw data using AzureChatOpenAI
 def parse_rbi_directions(raw_data):
     logger.info("Starting RBI directions parsing")
+    raw_data = clean_text(raw_data)
+    logger.info(f"Raw data (first 500 chars): {raw_data[:500]}")
     rows = []
     columns = ["Chapter", "Section No.", "Section", "Sub-Section"]
 
-    chapter_re = re.compile(
-        r"^(?:Chapter|CHAPTER)\s*[-–]\s*([IVX]+)\s*(.*)$", re.MULTILINE | re.IGNORECASE
-    )
-    appendix_re = re.compile(
-        r"^(?:Appendix|APPENDIX)\s*[-–]\s*([IVX]+)\s*(.*?)$",
-        re.MULTILINE | re.IGNORECASE,
+    # Regex to match numbered sections (e.g., "1.", "2.")
+    section_re = re.compile(r"^(?<!\d\.)\s*(\d+)\.\s*(.*?)(?=\n|$)", re.MULTILINE)
+    # Sub-section regex for nested items (e.g., "1.1", "1.1.1", "a)", "(i)")
+    subsection_re = re.compile(
+        r"^(?<!\d\.)\s*(\d+\.\d+(?:\.\d+)*|\w+\)|\(\w+\))\s*(.*?)(?=\n|$)", re.MULTILINE
     )
 
-    def parse_chapter_text(chapter_num, chapter_title, text):
-        logger.info(f"Parsing chapter: {chapter_num} - {chapter_title}")
+    def parse_section_text(section_num, section_title, text):
+        logger.info(f"Parsing section: {section_num} - {section_title}")
         prompt = f"""
-            You are a data extraction assistant. Below is a section of a regulatory document chapter in plain text format, extracted from a PDF. The text may lack consistent formatting but contains chapters, sections, and subsections. Extract all sections and subsections, preserving their numbering and text. Format the output as a list of entries, each with:
-            - Chapter: The chapter number and title (e.g., 'I - Preliminary')
-            - Section No.: The section number (e.g., '1', '2')
-            - Section: The section title (e.g., 'Short Title & Commencement')
-            - Sub-Section: The subsection text, including its label (e.g., 'a) Text...', 'i) Text...')
+You are a data extraction assistant tasked with extracting structured data from a regulatory document section. The input text is plain text extracted from a PDF and may have inconsistent formatting. Your task is to identify subsections (e.g., '1.1', 'a)', '(i)') and their text. Output the result as a list of entries, each formatted as:
 
-            Identify sections by numbers (e.g., '1.', '2.') and subsections by labels (e.g., 'a)', 'i)', '1.1'). If formatting is inconsistent, infer the structure based on context. Return the result as a plain text string with each entry on a new line, formatted as:
-            Chapter: <chapter_num> - <chapter_title>|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
+Chapter: {section_num} - {section_title}|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
 
-            Text:
-            {text[:4000]}
+- **Chapter**: Use the provided section number and title (e.g., '1 - Purpose').
+- **Section No.**: Identify subsection numbers (e.g., '1.1', '1.1.1').
+- **Section**: Extract the subsection title if available, or use the subsection number.
+- **Sub-Section**: Include the subsection label and text (e.g., 'a) Text...', '1.1 Text...').
 
-            Example output:
-            Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: a) These Directions.... - 1. First point text - 1.a) Sub-point text - 1.a)i) Sub-sub-point text
-        """
+Identify subsections by numbers (e.g., '1.1', '1.1.1') or labels (e.g., 'a)', '(i)'). If the structure is unclear, infer based on context. Ensure each entry is on a new line. If no subsections are found, return an empty string.
+
+Input Text:
+{text[:4000]}
+
+Example Output:
+Chapter: 1 - Purpose|Section No.: 1.1|Section: Operational Risk|Sub-Section: 1.1 Effective management of Operational Risk...
+Chapter: 1 - Purpose|Section No.: 1.2|Section: Scope|Sub-Section: 1.2 This applies to all regulated entities...
+"""
         try:
-            response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a precise data extraction assistant.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=2000,
+            # Use tuple-based message format
+            messages = [
+                ("system", "You are a precise data extraction assistant."),
+                ("human", prompt),
+            ]
+            response = openai_client.invoke(messages)
+            response_content = response.content.strip()
+            logger.info(
+                f"Azure response for section {section_num}: {response_content[:500]}"
             )
-            lines = response.choices[0].message.content.strip().splitlines()
+            lines = response_content.splitlines()
+            if not lines:
+                logger.warning(f"No data extracted for section: {section_num}")
+                return
             for line in lines:
                 if line.startswith("Chapter:"):
                     parts = line.split("|")
@@ -110,72 +130,71 @@ def parse_rbi_directions(raw_data):
                                 "Sub-Section": sub_section,
                             }
                         )
-            logger.info(
-                f"Successfully parsed chapter: {chapter_num} with {len(lines)} entries"
-            )
+            logger.info(f"Parsed section: {section_num} with {len(lines)} entries")
         except Exception as e:
-            logger.error(f"Error parsing chapter {chapter_num}: {str(e)}")
+            logger.error(f"Error parsing section {section_num}: {str(e)}")
 
-    def parse_appendix_text(app_num, app_title, text):
-        logger.info(f"Parsing appendix: {app_num} - {app_title}")
+    # Find sections
+    sections = section_re.finditer(raw_data)
+    section_starts = [(m.start(), m.group(1), m.group(2).strip()) for m in sections]
+    logger.info(
+        f"Found {len(section_starts)} sections: {[(num, title) for _, num, title in section_starts]}"
+    )
+    section_starts.append((len(raw_data), None, None))
+
+    # Process each section
+    for i in range(len(section_starts) - 1):
+        start_pos, section_num, section_title = section_starts[i]
+        end_pos = section_starts[i + 1][0]
+        section_text = raw_data[start_pos:end_pos]
+        if section_num:
+            parse_section_text(section_num, section_title, section_text)
+
+    # Fallback: If no sections are found, process the entire text
+    if not section_starts[:-1]:
+        logger.warning("No sections found, processing entire text")
         prompt = f"""
-            You are a data extraction assistant. Below is a section of a regulatory document appendix in plain text format, extracted from a PDF. Extract all points, including nested sub-points (e.g., 1., a), i)), and format them as a hierarchical list using bullet points. Preserve the numbering/lettering and include all text for each point. Return the result as a plain text string with each point on a new line.
+You are a data extraction assistant tasked with extracting structured data from a regulatory document. The input text is plain text extracted from a PDF and may have inconsistent formatting. Identify sections (e.g., '1.', '2.') and subsections (e.g., '1.1', 'a)', '(i)') and their text. Output the result as a list of entries, each formatted as:
 
-            Text:
-            {text[:4000]}
+Chapter: <section_num> - <section_title>|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
 
-            Example output:
-            - 1. First point text
-            - 1.a) Sub-point text
-            - 1.a)i) Sub-sub-point text
-        """
+If no clear section structure is found, treat top-level numbered items as sections and nested items as subsections. Ensure each entry is on a new line. If no data is found, return an empty string.
+
+Input Text:
+{raw_data[:8000]}
+
+Example Output:
+Chapter: 1 - Purpose|Section No.: 1.1|Section: Operational Risk|Sub-Section: 1.1 Effective management of Operational Risk...
+"""
         try:
-            response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a precise data extraction assistant.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=2000,
-            )
-            points = response.choices[0].message.content.strip()
-            rows.append(
-                {
-                    "Chapter": f"Appendix {app_num} - {app_title}",
-                    "Section No.": "",
-                    "Section": "",
-                    "Sub-Section": points,
-                }
-            )
-            logger.info(f"Successfully parsed appendix: {app_num}")
+            # Use tuple-based message format
+            messages = [
+                ("system", "You are a precise data extraction assistant."),
+                ("human", prompt),
+            ]
+            response = openai_client.invoke(messages)
+            response_content = response.content.strip()
+            logger.info(f"Azure response for full text: {response_content[:500]}")
+            lines = response_content.splitlines()
+            for line in lines:
+                if line.startswith("Chapter:"):
+                    parts = line.split("|")
+                    if len(parts) == 4:
+                        chapter = parts[0].replace("Chapter:", "").strip() or ""
+                        sec_no = parts[1].replace("Section No.:", "").strip() or ""
+                        sec_title = parts[2].replace("Section:", "").strip() or ""
+                        sub_section = parts[3].replace("Sub-Section:", "").strip() or ""
+                        rows.append(
+                            {
+                                "Chapter": chapter,
+                                "Section No.": sec_no,
+                                "Section": sec_title,
+                                "Sub-Section": sub_section,
+                            }
+                        )
+            logger.info(f"Parsed full text with {len(lines)} entries")
         except Exception as e:
-            logger.error(f"Error parsing appendix {app_num}: {str(e)}")
-
-    chapters = chapter_re.finditer(raw_data)
-    chapter_starts = [(m.start(), m.group(1), m.group(2).strip()) for m in chapters]
-    chapter_starts.append((len(raw_data), None, None))
-
-    for i in range(len(chapter_starts) - 1):
-        start_pos, chapter_num, chapter_title = chapter_starts[i]
-        end_pos = chapter_starts[i + 1][0]
-        chapter_text = raw_data[start_pos:end_pos]
-        if chapter_num:
-            parse_chapter_text(chapter_num, chapter_title, chapter_text)
-
-    appendices = appendix_re.finditer(raw_data)
-    for app in appendices:
-        app_num = app.group(1)
-        app_title = app.group(2).strip()
-        app_end = raw_data[app.start() :].find("# Appendix", 1)
-        app_text = (
-            raw_data[app.start() : app.start() + app_end]
-            if app_end != -1
-            else raw_data[app.start() :]
-        )
-        parse_appendix_text(app_num, app_title, app_text)
+            logger.error(f"Error parsing full text: {str(e)}")
 
     logger.info(f"Completed RBI directions parsing with {len(rows)} rows")
     return pd.DataFrame(rows, columns=columns)
@@ -190,7 +209,6 @@ def enhance_csv_with_summary_and_action(csv_path):
             logger.error(f"CSV is empty: {csv_path}")
             return False
 
-        # Initialize new columns
         df["Summary"] = ""
         df["Action Item"] = ""
 
@@ -201,32 +219,27 @@ def enhance_csv_with_summary_and_action(csv_path):
                 continue
 
             prompt = f"""
-                You are a compliance assistant. Below is a subsection from a regulatory document. Your task is to:
-                1. Summarize the subsection in one concise sentence (max 50 words).
-                2. Provide a specific action item to address the subsection's requirements.
+You are a compliance assistant. Below is a subsection from a regulatory document. Your task is to:
+1. Summarize the subsection in one concise sentence (max 50 words).
+2. Provide a specific action item to address the subsection's requirements.
 
-                Sub-Section:
-                {sub_section[:1000]}
+Sub-Section:
+{sub_section[:1000]}
 
-                Return the result as a plain text string in the format:
-                Summary: <one-line summary>|Action Item: <specific action>
+Return the result as:
+Summary: <one-line summary>|Action Item: <specific action>
 
-                Example output:
-                Summary: Entities must implement multi-factor authentication by 2023.|Action Item: Deploy MFA across all systems by Q4 2023.
-            """
+Example:
+Summary: Entities must implement multi-factor authentication by 2023.|Action Item: Deploy MFA across all systems by Q4 2023.
+"""
             try:
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a precise compliance assistant.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=100,
-                )
-                result = response.choices[0].message.content.strip()
+                # Use tuple-based message format
+                messages = [
+                    ("system", "You are a precise compliance assistant."),
+                    ("human", prompt),
+                ]
+                response = openai_client.invoke(messages)
+                result = response.content.strip()
                 if "|" in result:
                     summary, action = result.split("|", 1)
                     df.at[index, "Summary"] = summary.replace("Summary:", "").strip()
@@ -240,7 +253,6 @@ def enhance_csv_with_summary_and_action(csv_path):
             except Exception as e:
                 logger.error(f"Error processing Sub-Section at index {index}: {str(e)}")
 
-        # Save updated CSV
         df.to_csv(csv_path, index=False, encoding="utf-8")
         logger.info(f"Successfully enhanced CSV with {len(df)} rows")
         return True
@@ -249,6 +261,7 @@ def enhance_csv_with_summary_and_action(csv_path):
         return False
 
 
+# Rest of the code remains unchanged
 @app.route("/")
 def index():
     logger.info("Rendering index page")
@@ -278,17 +291,8 @@ def upload_file():
         def process_file():
             try:
                 logger.info(f"Extracting text from PDF: {filename}")
-                with open(file_path, "rb") as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    text = ""
-                    for page in pdf_reader.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                        else:
-                            logger.warning(
-                                f"Empty text extracted from page in {filename}"
-                            )
+                with pdfplumber.open(file_path) as pdf:
+                    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
                 if not text.strip():
                     logger.error(f"No text extracted from PDF: {filename}")
@@ -364,20 +368,18 @@ def upload_file():
                     )
                     writer.writerows(structured_data)
 
-                # Enhance CSV with Summary and Action Item
                 logger.info(f"Enhancing CSV with summary and action items: {csv_path}")
                 if not enhance_csv_with_summary_and_action(csv_path):
                     logger.error(f"Failed to enhance CSV: {csv_path}")
                     file_status[csv_filename] = "Failed"
                     return
 
-                # Verify CSV file
                 if not os.path.exists(csv_path):
                     logger.error(f"CSV file was not created: {csv_path}")
                     file_status[csv_filename] = "Failed"
                     return
                 csv_size = os.path.getsize(csv_path)
-                if csv_size < 100:  # Arbitrary small size to catch empty-ish files
+                if csv_size < 100:
                     logger.error(
                         f"CSV file is suspiciously small ({csv_size} bytes): {csv_path}"
                     )
@@ -593,14 +595,12 @@ def get_metrics():
             len(df["filename"].unique()) if "filename" in df.columns else 0
         )
 
-        # Calculate daily uploads for the past 7 days
         daily_uploads = {}
         for date in dates:
             date_obj = datetime.strptime(date, "%Y-%m-%d").date()
             count = len(df[df["date"] == date_obj]) if "date" in df.columns else 0
             daily_uploads[date] = count
 
-        # Calculate status distribution
         status_counts = (
             df["status"].value_counts().to_dict() if "status" in df.columns else {}
         )
