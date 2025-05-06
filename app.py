@@ -4,7 +4,7 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 import nest_asyncio
-from llama_parse import LlamaParse
+import PyPDF2
 import re
 from openai import OpenAI
 import dotenv
@@ -35,7 +35,6 @@ logger.info("Application directories initialized")
 # Load environment variables
 dotenv.load_dotenv()
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-LLAMA_PARSER_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
 logger.info("Environment variables loaded")
 
 # Apply nest_asyncio to allow nested event loops
@@ -50,32 +49,37 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-# Function to parse raw data using GPT API (unchanged)
+# Function to parse raw data using GPT API
 def parse_rbi_directions(raw_data):
     logger.info("Starting RBI directions parsing")
     rows = []
     columns = ["Chapter", "Section No.", "Section", "Sub-Section"]
 
-    chapter_re = re.compile(r"^# Chapter – ([IVX]+)(.*)$", re.MULTILINE)
-    appendix_re = re.compile(r"^# Appendix – ([IVX]+)\n# ([^\n]+)$", re.MULTILINE)
+    chapter_re = re.compile(
+        r"^(?:Chapter|CHAPTER)\s*[-–]\s*([IVX]+)\s*(.*)$", re.MULTILINE | re.IGNORECASE
+    )
+    appendix_re = re.compile(
+        r"^(?:Appendix|APPENDIX)\s*[-–]\s*([IVX]+)\s*(.*?)$",
+        re.MULTILINE | re.IGNORECASE,
+    )
 
     def parse_chapter_text(chapter_num, chapter_title, text):
         logger.info(f"Parsing chapter: {chapter_num} - {chapter_title}")
         prompt = f"""
-            You are a data extraction assistant. Below is a section of a regulatory document chapter in Markdown format. Extract all sections and subsections, preserving their numbering and text. Format the output as a list of entries, each with:
+            You are a data extraction assistant. Below is a section of a regulatory document chapter in plain text format, extracted from a PDF. The text may lack consistent formatting but contains chapters, sections, and subsections. Extract all sections and subsections, preserving their numbering and text. Format the output as a list of entries, each with:
             - Chapter: The chapter number and title (e.g., 'I - Preliminary')
             - Section No.: The section number (e.g., '1', '2')
             - Section: The section title (e.g., 'Short Title & Commencement')
             - Sub-Section: The subsection text, including its label (e.g., 'a) Text...', 'i) Text...')
 
-            Return the result as a plain text string with each entry on a new line, formatted as:
+            Identify sections by numbers (e.g., '1.', '2.') and subsections by labels (e.g., 'a)', 'i)', '1.1'). If formatting is inconsistent, infer the structure based on context. Return the result as a plain text string with each entry on a new line, formatted as:
             Chapter: <chapter_num> - <chapter_title>|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
 
             Text:
             {text}
 
             Example output:
-            Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: a) These Directions....  - 1. First point text - 1.a) Sub-point text - 1.a)i) Sub-sub-point textshall be called...
+            Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: a) These Directions.... - 1. First point text - 1.a) Sub-point text - 1.a)i) Sub-sub-point text
         """
         try:
             response = openai_client.chat.completions.create(
@@ -87,6 +91,7 @@ def parse_rbi_directions(raw_data):
                     },
                     {"role": "user", "content": prompt},
                 ],
+                max_tokens=2000,
             )
             lines = response.choices[0].message.content.strip().splitlines()
             for line in lines:
@@ -105,17 +110,19 @@ def parse_rbi_directions(raw_data):
                                 "Sub-Section": sub_section,
                             }
                         )
-            logger.info(f"Successfully parsed chapter: {chapter_num}")
+            logger.info(
+                f"Successfully parsed chapter: {chapter_num} with {len(lines)} entries"
+            )
         except Exception as e:
             logger.error(f"Error parsing chapter {chapter_num}: {str(e)}")
 
     def parse_appendix_text(app_num, app_title, text):
         logger.info(f"Parsing appendix: {app_num} - {app_title}")
         prompt = f"""
-            You are a data extraction assistant. Below is a section of a regulatory document appendix in Markdown format. Extract all points, including nested sub-points (e.g., 1., a), i)), and format them as a hierarchical list using bullet points. Preserve the numbering/lettering and include all text for each point. Return the result as a plain text string with each point on a new line.
+            You are a data extraction assistant. Below is a section of a regulatory document appendix in plain text format, extracted from a PDF. Extract all points, including nested sub-points (e.g., 1., a), i)), and format them as a hierarchical list using bullet points. Preserve the numbering/lettering and include all text for each point. Return the result as a plain text string with each point on a new line.
 
             Text:
-            {text[:4000]}
+            {text}
 
             Example output:
             - 1. First point text
@@ -170,7 +177,7 @@ def parse_rbi_directions(raw_data):
         )
         parse_appendix_text(app_num, app_title, app_text)
 
-    logger.info("Completed RBI directions parsing")
+    logger.info(f"Completed RBI directions parsing with {len(rows)} rows")
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -202,33 +209,43 @@ def upload_file():
 
         def process_file():
             try:
-                if not LLAMA_PARSER_API_KEY:
-                    logger.error("LlamaParse API key is missing or invalid")
+                logger.info(f"Extracting text from PDF: {filename}")
+                with open(file_path, "rb") as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    text = ""
+                    for page in pdf_reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                        else:
+                            logger.warning(
+                                f"Empty text extracted from page in {filename}"
+                            )
+
+                if not text.strip():
+                    logger.error(f"No text extracted from PDF: {filename}")
                     file_status[csv_filename] = "Failed"
                     return
 
-                logger.info("Initializing LlamaParse parser")
-                parser = LlamaParse(
-                    api_key=LLAMA_PARSER_API_KEY, result_type="markdown", verbose=True
+                txt_path = os.path.join(
+                    app.config["EXTRACTED_TEXT"], os.path.splitext(filename)[0] + ".txt"
                 )
+                logger.info(f"Saving extracted text to: {txt_path}")
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(text)
 
-                logger.info(f"Parsing PDF: {filename}")
-                parsed_documents = parser.load_data(file_path)
-
-                markdown_path = os.path.join(
-                    app.config["EXTRACTED_TEXT"], os.path.splitext(filename)[0] + ".md"
-                )
-                logger.info(f"Saving parsed Markdown to: {markdown_path}")
-                with open(markdown_path, "w", encoding="utf-8") as f:
-                    for doc in parsed_documents:
-                        f.write(doc.text + "\n")
-
-                logger.info(f"Reading Markdown from: {markdown_path}")
-                with open(markdown_path, "r", encoding="utf-8") as file:
+                logger.info(f"Reading text from: {txt_path}")
+                with open(txt_path, "r", encoding="utf-8") as file:
                     raw_data = file.read()
 
-                logger.info("Parsing Markdown data into DataFrame")
+                logger.info("Parsing text data into DataFrame")
                 df = parse_rbi_directions(raw_data)
+
+                if df.empty:
+                    logger.error(f"Parsed DataFrame is empty for {filename}")
+                    file_status[csv_filename] = "Failed"
+                    return
+                logger.info(f"Parsed DataFrame contains {len(df)} rows")
 
                 csv_path = os.path.join(app.config["EXCEL_SHEETS"], csv_filename)
                 logger.info(f"Saving initial CSV to: {csv_path}")
@@ -251,6 +268,12 @@ def upload_file():
                         ]
                     )
 
+                if not structured_data:
+                    logger.error(f"No structured data generated for {filename}")
+                    file_status[csv_filename] = "Failed"
+                    return
+                logger.info(f"Generated {len(structured_data)} rows of structured data")
+
                 logger.info(f"Saving structured CSV to: {csv_path}")
                 with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                     writer = csv.writer(csvfile)
@@ -268,6 +291,19 @@ def upload_file():
                         ]
                     )
                     writer.writerows(structured_data)
+
+                # Verify CSV file
+                if not os.path.exists(csv_path):
+                    logger.error(f"CSV file was not created: {csv_path}")
+                    file_status[csv_filename] = "Failed"
+                    return
+                csv_size = os.path.getsize(csv_path)
+                if csv_size < 100:  # Arbitrary small size to catch empty-ish files
+                    logger.error(
+                        f"CSV file is suspiciously small ({csv_size} bytes): {csv_path}"
+                    )
+                    file_status[csv_filename] = "Failed"
+                    return
 
                 logger.info(f"File {filename} processed successfully")
                 file_status[csv_filename] = "Completed"

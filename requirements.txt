@@ -10,3 +10,4 @@ python-dotenv
 llama_cloud_services
 llama-index
 llama-parse
+PyPDF2
