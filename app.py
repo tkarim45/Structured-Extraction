@@ -11,6 +11,7 @@ import dotenv
 import csv
 import logging
 import threading
+import dateutil.parser
 
 # Configure logging
 logging.basicConfig(
@@ -76,7 +77,7 @@ def parse_rbi_directions(raw_data):
             Chapter: <chapter_num> - <chapter_title>|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
 
             Text:
-            {text[:4000]}
+            {text}
 
             Example output:
             Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: a) These Directions.... - 1. First point text - 1.a) Sub-point text - 1.a)i) Sub-sub-point text
@@ -122,7 +123,7 @@ def parse_rbi_directions(raw_data):
             You are a data extraction assistant. Below is a section of a regulatory document appendix in plain text format, extracted from a PDF. Extract all points, including nested sub-points (e.g., 1., a), i)), and format them as a hierarchical list using bullet points. Preserve the numbering/lettering and include all text for each point. Return the result as a plain text string with each point on a new line.
 
             Text:
-            {text[:4000]}
+            {text}
 
             Example output:
             - 1. First point text
@@ -193,6 +194,9 @@ def enhance_csv_with_summary_and_action(csv_path):
         # Initialize new columns
         df["Summary"] = ""
         df["Action Item"] = ""
+        if "Due date" not in df.columns:
+            df["Due date"] = ""
+        df["Due date"] = df["Due date"].astype(str)
 
         for index, row in df.iterrows():
             sub_section = row["Sub Section"]
@@ -204,15 +208,17 @@ def enhance_csv_with_summary_and_action(csv_path):
                 You are a compliance assistant. Below is a subsection from a regulatory document. Your task is to:
                 1. Summarize the subsection in one concise sentence (max 50 words).
                 2. Provide a specific action item to address the subsection's requirements.
+                3. Extract the due date for compliance, if mentioned. If the due date is a specific date, return it in YYYY-MM-DD format. If the due date is relative (e.g., 'within 6 months', '30 days after notification', 'by the end of the quarter'), calculate and return the exact date in YYYY-MM-DD format if possible, using the context of the subsection or today's date as a reference. If you cannot determine an exact date, return 'N/A'.
 
                 Sub-Section:
-                {sub_section[:1000]}
+                {sub_section}
 
                 Return the result as a plain text string in the format:
-                Summary: <one-line summary>|Action Item: <specific action>
+                Summary: <one-line summary>|Action Item: <specific action>|Due date: <YYYY-MM-DD or N/A>
 
                 Example output:
-                Summary: Entities must implement multi-factor authentication by 2023.|Action Item: Deploy MFA across all systems by Q4 2023.
+                Summary: Entities must implement multi-factor authentication by 2023.|Action Item: Deploy MFA across all systems by Q4 2023.|Due date: 2023-12-31
+                Summary: Compliance must be achieved within 6 months of notification.|Action Item: Complete all required changes within 6 months.|Due date: 2024-11-15
             """
             try:
                 response = openai_client.chat.completions.create(
@@ -224,15 +230,24 @@ def enhance_csv_with_summary_and_action(csv_path):
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    max_tokens=100,
+                    max_tokens=120,
                 )
                 result = response.choices[0].message.content.strip()
-                if "|" in result:
-                    summary, action = result.split("|", 1)
+                if result.count("|") == 2:
+                    summary, action, due = result.split("|", 2)
                     df.at[index, "Summary"] = summary.replace("Summary:", "").strip()
                     df.at[index, "Action Item"] = action.replace(
                         "Action Item:", ""
                     ).strip()
+                    due_value = due.replace("Due date:", "").strip()
+                    # Try to parse and standardize the date
+                    if due_value and due_value.upper() != "N/A":
+                        try:
+                            parsed_date = dateutil.parser.parse(due_value, fuzzy=True)
+                            due_value = parsed_date.strftime("%Y-%m-%d")
+                        except Exception:
+                            pass  # Keep original if parsing fails
+                    df.at[index, "Due date"] = due_value
                 else:
                     logger.warning(
                         f"Invalid response format for index {index}: {result}"
@@ -330,7 +345,7 @@ def upload_file():
                             row["Sub-Section"],
                             row["Sub-Section"],
                             "Compliance required",
-                            "2023-10-01",
+                            "",  # Placeholder for Due date, to be filled by LLM
                             "Regulated Entities",
                             "Compliance Team",
                             "",  # Placeholder for Summary
@@ -355,7 +370,7 @@ def upload_file():
                             "Sub Section",
                             "Description",
                             "Compliance_Requirements",
-                            "Effective_Date",
+                            "Due date",
                             "Applicability",
                             "Role Assigned To",
                             "Summary",
@@ -452,7 +467,7 @@ def get_file_content(filename):
             "Sub Section",
             "Description",
             "Compliance_Requirements",
-            "Effective_Date",
+            "Due date",
             "Applicability",
             "Role Assigned To",
             "Summary",
@@ -490,7 +505,7 @@ def view_file(filename):
             "Sub Section",
             "Description",
             "Compliance_Requirements",
-            "Effective_Date",
+            "Due date",
             "Applicability",
             "Role Assigned To",
             "Summary",
