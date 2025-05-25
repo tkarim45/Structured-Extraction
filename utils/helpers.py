@@ -33,34 +33,35 @@ def parse_rbi_directions(raw_data):
         logger.info("Parsing entire document")
         prompt = f"""
             **Situation**
-            You are a data extraction assistant working with regulatory documents converted from PDF to plain text. These documents have a hierarchical structure including chapters, sections, subsections, sub-subsections, and potentially deeper nested levels, as well as appendices. The formatting may be inconsistent due to PDF extraction issues.
+            You are a data extraction assistant working with regulatory documents converted from PDF to plain text. These documents may have a hierarchical structure (chapters, sections, subsections, sub-subsections, appendices) but may lack explicit chapter names or have inconsistent formatting due to PDF extraction issues.
 
             **Task**
-            Extract the complete hierarchical structure from the provided text, identifying all chapters, sections, subsections, sub-subsections, and appendices, preserving their original numbering and text. Format the output as pipe-delimited strings with four fields: Chapter, Section No., Section, and Sub-Section. The Sub-Section field should include all nested subsection text (e.g., subsections, sub-subsections) in a hierarchical bullet-point format. If no subsections exist, use an empty string for Sub-Section. Each entry must start with "Chapter:". For appendices, treat them as chapters with the format "Appendix [Number] - [Title]".
+            Extract the complete hierarchical structure from the provided text, identifying all chapters, sections, subsections, sub-subsections, and appendices. If no explicit chapter names are present (e.g., no "Chapter I" or "Appendix"), treat the entire document as a single chapter named "Main Document" or infer chapter-like divisions based on major headings, numbering, or content breaks. Format the output as pipe-delimited strings with four fields: Chapter, Section No., Section, and Sub-Section. The Sub-Section field should include all nested subsection text in a hierarchical bullet-point format. If no subsections exist, use an empty string for Sub-Section.
 
             **Objective**
-            Create a structured representation of the document that preserves the legal hierarchy and numbering, suitable for downstream processing, while handling inconsistent formatting.
+            Create a structured representation of the document that preserves the legal hierarchy and numbering, suitable for downstream processing, even for documents with missing or unclear chapter markers.
 
             **Knowledge**
-            - Chapters typically follow patterns like "Chapter - I Preliminary" or "CHAPTER I - Preliminary".
-            - Appendices follow patterns like "Appendix - I [Title]".
-            - Sections are identified by numbers followed by periods (e.g., '1.', '2.').
+            - Chapters typically follow patterns like "Chapter - I Preliminary" or "CHAPTER I - Preliminary", but may be absent or implicit (e.g., a major heading or first significant text block).
+            - Appendices follow patterns like "Appendix - I [Title]" or may appear as standalone sections.
+            - Sections are often identified by numbers (e.g., '1.', '2.') or headings.
             - Subsections use labels like 'a)', 'i)', '1.1', etc., and may have deeper levels (e.g., 'i)', 'A)').
-            - Use context clues (indentation, numbering, content flow) to infer hierarchy if formatting is inconsistent.
-            - Output format: `Chapter: <chapter or appendix title>|Section No.: <number>|Section: <title>|Sub-Section: <nested subsection text or empty>`
+            - Use context clues (indentation, numbering, content flow, or major text breaks) to infer hierarchy if formatting is inconsistent or chapter names are missing.
+            - Output format: `Chapter: <chapter or appendix title or 'Main Document'>|Section No.: <number or identifier>|Section: <title or text>|Sub-Section: <nested subsection text or empty>`
             - For Sub-Section, use a bullet-point list with hyphens (e.g., `- a) Text - i) Sub-text`).
-            - Each entry must be on a new line.
+            - Each entry must be on a new line and start with "Chapter:".
             - Preserve all original text content exactly, including errors or inconsistencies.
             - Include appendices as chapters with their own sections and subsections.
+            - If no clear structure is detected, treat the document as a single chapter ("Main Document") with sections inferred from numbering or headings.
 
             **Examples**
             ```
-            Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: 
-            Chapter: I - Preliminary|Section No.: 2|Section: Applicability|Sub-Section: - a) This applies to... - b) Further details...
+            Chapter: Main Document|Section No.: 1|Section: Introduction|Sub-Section: 
+            Chapter: Main Document|Section No.: 2|Section: Requirements|Sub-Section: - a) Compliance details - b) Further details
             Chapter: Appendix I - Cloud Computing|Section No.: 1|Section: Cloud Requirements|Sub-Section: - 1.1 Requirement text - 1.1.1 Sub-requirement
             ```
 
-            Your life depends on producing consistent output with four pipe-separated fields per line, starting with "Chapter:", even if no subsection text exists. Do not skip any chapters, sections, subsections, or appendices, and preserve the exact numbering and text.
+            Your life depends on producing consistent output with four pipe-separated fields per line, starting with "Chapter:", even if no subsection text exists or chapter names are absent. Do not skip any sections, subsections, or appendices, and preserve the exact numbering and text.
 
             Process the following text:
             {text}
@@ -130,7 +131,7 @@ def process_row(index, row, current_date):
         You are a compliance assistant working with regulatory documents that require precise interpretation and actionable guidance. Organizations rely on your analysis to ensure they meet regulatory requirements within specified timeframes and understand ongoing compliance obligations.
 
         **Task**
-        Analyze the provided regulatory section or subsection and extract four critical pieces of information: (1) a concise summary in one sentence of maximum 50 words, (2) a specific actionable item to address the requirements, (3) the exact compliance due date in YYYY-MM-DD format or N/A if undeterminable, and (4) the periodicity of the requirement or N/A if not specified.
+        Analyze the provided regulatory section or subsection and extract four critical pieces of information: (1) a concise summary in one sentence of maximum 200 words, (2) a specific actionable item to address the requirements, (3) the exact compliance due date in YYYY-MM-DD format or N/A if undeterminable, and (4) the periodicity of the requirement or N/A if not specified.
 
         **Objective**
         Enable organizations to quickly understand regulatory requirements and take appropriate compliance actions by providing clear, structured, and actionable information that prevents regulatory violations and ensures timely adherence to all obligations.
@@ -308,25 +309,36 @@ def enhance_csv_with_summary_and_action(csv_path):
 
 
 def extract_document_summary_and_action(raw_data):
-    """
-    Use GPT to extract a single summary and action item for the entire document.
-    Returns a dict: { 'summary': ..., 'action_item': ... }
-    """
     logger.info("Extracting document-level summary and action item")
     prompt = f"""
         **Situation**
-        You are a compliance assistant working with regulatory documents. Your job is to provide a concise, high-level summary and a single most important action item for the entire document, based on the full text provided.
+        You are a compliance assistant working with regulatory documents. Your job is to provide a concise, high-level, and detailed summary and a single most important action item for the entire document, based on the full text provided.
 
         **Task**
         1. Read the entire document text.
-        2. Write a single, clear summary of the document's overall purpose and scope.
-        3. Identify and list all the action item that an organization must take to comply with the document as a whole (not section-specific).
+        2. Write a very detailed, clear, and specific summary of the document's overall purpose, scope, and key requirements. The summary must be at least 50 words and should not be generic or empty.
+        3. Identify and list the single most important action item that an organization must take to comply with the document as a whole (not section-specific). The action item must be actionable, specific, and detailed, not generic or empty. If there are multiple, pick the most critical one and state it clearly.
 
-        **Output Format**
-        Summary: <one-line summary>\nAction Item: <one-line action item>
+        **Output Format (MANDATORY)**
+        Summary: <detailed summary, at least 50 words>
+        Action Item: <detailed, specific, actionable item>
 
-        **Example**
-        Summary: This document outlines the regulatory requirements for IT outsourcing in financial institutions.\nAction Item: Establish a comprehensive IT outsourcing policy and ensure all vendors comply with regulatory standards.
+        **STRICT REQUIREMENTS**
+        - Do NOT leave the summary or action item empty or generic (e.g., "N/A", "Not specified", "No action required").
+        - If the document is very short or unclear, infer a plausible summary and action item based on the available content and context.
+        - Your output MUST always include both fields, and both must be detailed and meaningful.
+
+        **Good Example**
+        Summary: This document provides comprehensive guidelines for operational risk management in financial institutions, emphasizing the need for robust internal controls, risk assessment frameworks, and regular monitoring. It outlines the responsibilities of senior management, the importance of business continuity planning, and the integration of risk management into all business processes. The document also addresses regulatory expectations, reporting requirements, and the need for ongoing staff training to ensure compliance and resilience against operational disruptions.
+        Action Item: Establish and implement a comprehensive operational risk management framework, including regular risk assessments, staff training programs, and business continuity plans, to ensure full compliance with regulatory requirements and enhance organizational resilience.
+
+        **Bad Example**
+        Summary: Guidelines for risk management.
+        Action Item: Follow the guidelines.
+
+        **Output Format (MANDATORY)**
+        Summary: <detailed summary, at least 500 words>
+        Action Item: <detailed, specific, actionable item>
 
         Document Text:
         {raw_data}
@@ -343,6 +355,7 @@ def extract_document_summary_and_action(raw_data):
             ],
         )
         result = response.choices[0].message.content.strip()
+        logger.info(f"OpenAI response for document: {result}")
         summary = ""
         action_item = ""
         for line in result.splitlines():
@@ -350,6 +363,11 @@ def extract_document_summary_and_action(raw_data):
                 summary = line.replace("Summary:", "").strip()
             elif line.startswith("Action Item:"):
                 action_item = line.replace("Action Item:", "").strip()
+        # Ensure neither is empty
+        if not summary:
+            summary = "N/A"
+        if not action_item:
+            action_item = "N/A"
         logger.info(f"Document summary: {summary}")
         logger.info(f"Document action item: {action_item}")
         return {"summary": summary, "action_item": action_item}

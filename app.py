@@ -116,18 +116,18 @@ def upload_file():
                 with open(txt_path, "w", encoding="utf-8") as f:
                     f.write(text)
 
+                logger.info(f"Reading text from: {txt_path}")
+                with open(txt_path, "r", encoding="utf-8") as file:
+                    raw_data = file.read()
+
                 # --- Extract document-level summary and action item ---
-                doc_summary_action = extract_document_summary_and_action(text)
+                doc_summary_action = extract_document_summary_and_action(raw_data)
                 notice_status[notice_id]["summary"] = doc_summary_action.get(
                     "summary", ""
                 )
                 notice_status[notice_id]["action_item"] = doc_summary_action.get(
                     "action_item", ""
                 )
-
-                logger.info(f"Reading text from: {txt_path}")
-                with open(txt_path, "r", encoding="utf-8") as file:
-                    raw_data = file.read()
 
                 logger.info("Parsing text data into DataFrame")
                 df = parse_rbi_directions(raw_data)
@@ -144,7 +144,10 @@ def upload_file():
 
                 structured_data = []
                 document_id = f"{base}_{timestamp}_{notice_id}"
-                for _, row in df.iterrows():
+                document_summary = doc_summary_action.get("summary", "")
+                document_action_item = doc_summary_action.get("action_item", "")
+                for idx, row in enumerate(df.iterrows()):
+                    _, row = row
                     structured_data.append(
                         [
                             document_id,
@@ -159,6 +162,8 @@ def upload_file():
                             "No",  # Marked as Completed
                             "Not Started",  # Work Status
                             "",  # Role Assigned To
+                            document_summary if idx == 0 else "",
+                            document_action_item if idx == 0 else "",
                         ]
                     )
 
@@ -185,6 +190,8 @@ def upload_file():
                             "Marked as Completed",
                             "Work Status",
                             "Role Assigned To",
+                            "Document Summary",
+                            "Document Action Item",
                         ]
                     )
                     writer.writerows(structured_data)
@@ -503,6 +510,15 @@ def list_notices():
                     ).strftime("%Y-%m-%d %H:%M:%S")
                     summary = ""
                     action_item = ""
+                if not summary or not action_item:
+                    try:
+                        df = pd.read_csv(file_path)
+                        if "Document Summary" in df.columns and not df.empty:
+                            summary = df.at[0, "Document Summary"]
+                        if "Document Action Item" in df.columns and not df.empty:
+                            action_item = df.at[0, "Document Action Item"]
+                    except Exception as e:
+                        logger.error(f"Error reading summary/action from CSV: {str(e)}")
                 notices.append(
                     {
                         "notice_id": found_notice_id or os.path.splitext(filename)[0],

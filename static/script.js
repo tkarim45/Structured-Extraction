@@ -58,6 +58,9 @@ document.addEventListener("DOMContentLoaded", () => {
           duration: 3000,
           style: { background: "green" },
         }).showToast();
+        // Switch to Files tab and refresh
+        document.querySelector('.sidebar nav a[data-page="files"]').click();
+        fetchFiles();
       } else {
         uploadStatus.textContent = `Error: ${result.error}`;
         Toastify({
