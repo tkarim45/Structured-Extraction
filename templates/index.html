@@ -15,6 +15,7 @@
           <li><a href="#" data-page="home" class="active">Home</a></li>
           <li><a href="#" data-page="upload">Upload</a></li>
           <li><a href="#" data-page="files">Files</a></li>
+          <li><a href="#" data-page="notices">Notices</a></li>
         </ul>
       </nav>
     </div>
@@ -48,6 +49,10 @@
           <div class="chart-card">
             <h3>File Status Distribution</h3>
             <canvas id="status-chart"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Notice Completion</h3>
+            <canvas id="notice-completion-chart"></canvas>
           </div>
         </div>
       </div>
@@ -84,11 +89,28 @@
         <table id="files-table">
           <thead>
             <tr>
+              <th>Notice ID</th>
               <th>Document ID</th>
               <th>Filename</th>
               <th>Upload Date</th>
               <th>Size (KB)</th>
               <th>Status</th>
+              <th>Approval Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="notices" class="page">
+        <h1>Notices</h1>
+        <table id="notices-table">
+          <thead>
+            <tr>
+              <th>Notice ID</th>
+              <th>Status</th>
+              <th>Last Updated</th>
               <th>Actions</th>
             </tr>
           </thead>

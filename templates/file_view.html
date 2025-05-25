@@ -6,6 +6,144 @@
     <title>File View - {{ filename }}</title>
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" />
+    <style>
+      .file-card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 4px 16px rgba(44, 62, 80, 0.08);
+        padding: 32px 24px 24px 24px;
+        margin: 0 auto 32px auto;
+        max-width: 1200px;
+      }
+      .file-title {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #2c3e50;
+        margin-bottom: 8px;
+      }
+      .file-summary {
+        color: #666;
+        margin-bottom: 24px;
+      }
+      .table-scroll {
+        overflow-x: auto;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(44, 62, 80, 0.04);
+      }
+      table.styled-table.resizable {
+        min-width: 900px;
+        border-radius: 8px;
+        overflow: hidden;
+        border-collapse: separate;
+        border-spacing: 0;
+      }
+      .styled-table th,
+      .styled-table td {
+        border-right: 1px solid #d1d5db;
+      }
+      .styled-table th:last-child,
+      .styled-table td:last-child {
+        border-right: none;
+      }
+      .styled-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #3498db;
+        color: #fff;
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        border-bottom: 2px solid #2980b9;
+        user-select: none;
+        position: relative;
+      }
+      .styled-table tbody tr:nth-child(even) {
+        background: #f8fafc;
+      }
+      .styled-table tbody tr:nth-child(odd) {
+        background: #fff;
+      }
+      .styled-table tbody tr:hover {
+        background: #eaf6fb;
+        transition: background 0.2s;
+      }
+      .role-cell input {
+        width: 70%;
+        padding: 6px 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 1rem;
+      }
+      .save-btn,
+      .mark-completed-btn {
+        margin-left: 8px;
+        padding: 6px 14px;
+        background: #059669;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: background 0.2s;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .save-btn:hover,
+      .mark-completed-btn:hover {
+        background: #047857;
+      }
+      .marked-completed-cell {
+        text-align: center;
+      }
+      .work-status-cell {
+        text-align: center;
+        font-weight: 500;
+        color: #2563eb;
+      }
+      .back-btn {
+        display: inline-block;
+        padding: 8px 18px;
+        background: #3498db;
+        color: #fff !important;
+        border: none;
+        border-radius: 5px;
+        font-size: 1rem;
+        font-weight: 600;
+        text-decoration: none;
+        margin-bottom: 18px;
+        margin-top: 8px;
+        transition: background 0.2s;
+        box-shadow: 0 2px 6px rgba(44, 62, 80, 0.08);
+      }
+      .back-btn:hover {
+        background: #2563eb;
+      }
+      /* Resize handle */
+      .resize-handle {
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 6px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 10;
+        background: transparent;
+      }
+      .resize-handle:hover {
+        background: #60a5fa44;
+      }
+      @media (max-width: 1100px) {
+        .file-card {
+          padding: 16px 4px;
+        }
+        .table-scroll {
+          max-width: 100vw;
+        }
+      }
+    </style>
   </head>
   <body>
     <div class="sidebar">
@@ -21,37 +159,82 @@
 
     <div class="main-content">
       <div class="page active">
-        <h1>File: {{ filename }}</h1>
-        <a href="/" class="back-btn">Back to Dashboard</a>
-        <div class="table-container">
-          <table id="file-content-table">
-            <thead>
-              <tr>
-                {% for header in headers %}
-                <th>{{ header }}</th>
+        <div class="file-card">
+          <div class="file-title"><i class="fa-solid fa-file-lines"></i> File: {{ filename }}</div>
+          <div class="file-summary">Below is the extracted and structured data for this regulatory document. You can edit roles or mark items as completed.</div>
+          <a href="/" class="back-btn">&larr; Back to Dashboard</a>
+          <div class="table-scroll">
+            <table id="file-content-table" class="styled-table resizable">
+              <thead>
+                <tr>
+                  {% for header in headers %}
+                  <th>{{ header }}<span class="resize-handle"></span></th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in data %}
+                <tr>
+                  {% for header in headers %} {% if header == "Role Assigned To" %}
+                  <td class="role-cell">
+                    <input type="text" class="role-input" data-row-index="{{ loop.index0 }}" value="{{ row[header] }}" />
+                    <button class="save-btn" data-row-index="{{ loop.index0 }}"><i class="fa-solid fa-floppy-disk"></i> Save</button>
+                  </td>
+                  {% elif header == "Marked as Completed" %}
+                  <td class="marked-completed-cell">
+                    {% if row[header] == 'No' %}
+                    <button class="mark-completed-btn" data-row-index="{{ loop.index0 }}"><i class="fa-solid fa-check"></i> Mark as Completed</button>
+                    {% else %} <span style="color: #059669; font-weight: 600"><i class="fa-solid fa-circle-check"></i> Completed</span> {% endif %}
+                  </td>
+                  {% elif header == "Work Status" %}
+                  <td class="work-status-cell">{{ row[header] }}</td>
+                  {% else %}
+                  <td>{{ row[header] }}</td>
+                  {% endif %} {% endfor %}
+                </tr>
                 {% endfor %}
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in data %}
-              <tr>
-                {% for header in headers %} {% if header == "Role Assigned To" %}
-                <td class="role-cell">
-                  <input type="text" class="role-input" data-row-index="{{ loop.index0 }}" value="{{ row[header] }}" />
-                  <button class="save-btn" data-row-index="{{ loop.index0 }}">Save</button>
-                </td>
-                {% else %}
-                <td>{{ row[header] }}</td>
-                {% endif %} {% endfor %}
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
     <script src="/static/file_view.js"></script>
+    <script>
+      // Column resize logic for .resizable tables
+      document.addEventListener("DOMContentLoaded", function () {
+        const table = document.querySelector("table.resizable");
+        if (!table) return;
+        let startX, startWidth, col, nextCol;
+        let pressed = false;
+        table.querySelectorAll("th .resize-handle").forEach(function (handle, i) {
+          handle.addEventListener("mousedown", function (e) {
+            col = handle.parentElement;
+            startX = e.pageX;
+            startWidth = col.offsetWidth;
+            pressed = true;
+            document.body.style.cursor = "col-resize";
+            // Optional: nextCol = col.nextElementSibling;
+            e.preventDefault();
+          });
+        });
+        document.addEventListener("mousemove", function (e) {
+          if (!pressed) return;
+          let dx = e.pageX - startX;
+          if (col) {
+            let newWidth = Math.max(60, startWidth + dx);
+            col.style.width = newWidth + "px";
+          }
+        });
+        document.addEventListener("mouseup", function () {
+          if (pressed) {
+            pressed = false;
+            document.body.style.cursor = "";
+          }
+        });
+      });
+    </script>
   </body>
 </html>

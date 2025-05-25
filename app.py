@@ -12,6 +12,12 @@ import csv
 import logging
 import threading
 import dateutil.parser
+from utils.helpers import (
+    allowed_file,
+    parse_rbi_directions,
+    enhance_csv_with_summary_and_action,
+)
+import uuid
 
 # Configure logging
 logging.basicConfig(
@@ -44,224 +50,7 @@ logger.info("Nested asyncio applied")
 
 # In-memory status tracking
 file_status = {}
-
-
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-# Function to parse raw data using GPT API
-def parse_rbi_directions(raw_data):
-    logger.info("Starting RBI directions parsing")
-    rows = []
-    columns = ["Chapter", "Section No.", "Section", "Sub-Section"]
-
-    chapter_re = re.compile(
-        r"^(?:Chapter|CHAPTER)\s*[-–]\s*([IVX]+)\s*(.*)$", re.MULTILINE | re.IGNORECASE
-    )
-    appendix_re = re.compile(
-        r"^(?:Appendix|APPENDIX)\s*[-–]\s*([IVX]+)\s*(.*?)$",
-        re.MULTILINE | re.IGNORECASE,
-    )
-
-    def parse_chapter_text(chapter_num, chapter_title, text):
-        logger.info(f"Parsing chapter: {chapter_num} - {chapter_title}")
-        prompt = f"""
-            You are a data extraction assistant. Below is a section of a regulatory document chapter in plain text format, extracted from a PDF. The text may lack consistent formatting but contains chapters, sections, and subsections. Extract all sections and subsections, preserving their numbering and text. Format the output as a list of entries, each with:
-            - Chapter: The chapter number and title (e.g., 'I - Preliminary')
-            - Section No.: The section number (e.g., '1', '2')
-            - Section: The section title (e.g., 'Short Title & Commencement')
-            - Sub-Section: The subsection text, including its label (e.g., 'a) Text...', 'i) Text...')
-
-            Identify sections by numbers (e.g., '1.', '2.') and subsections by labels (e.g., 'a)', 'i)', '1.1'). If formatting is inconsistent, infer the structure based on context. Return the result as a plain text string with each entry on a new line, formatted as:
-            Chapter: <chapter_num> - <chapter_title>|Section No.: <number>|Section: <title>|Sub-Section: <label> <text>
-
-            Text:
-            {text}
-
-            Example output:
-            Chapter: I - Preliminary|Section No.: 1|Section: Short Title & Commencement|Sub-Section: a) These Directions.... - 1. First point text - 1.a) Sub-point text - 1.a)i) Sub-sub-point text
-        """
-        try:
-            response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a precise data extraction assistant.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=2000,
-            )
-            lines = response.choices[0].message.content.strip().splitlines()
-            for line in lines:
-                if line.startswith("Chapter:"):
-                    parts = line.split("|")
-                    if len(parts) == 4:
-                        chapter = parts[0].replace("Chapter:", "").strip() or ""
-                        sec_no = parts[1].replace("Section No.:", "").strip() or ""
-                        sec_title = parts[2].replace("Section:", "").strip() or ""
-                        sub_section = parts[3].replace("Sub-Section:", "").strip() or ""
-                        rows.append(
-                            {
-                                "Chapter": chapter,
-                                "Section No.": sec_no,
-                                "Section": sec_title,
-                                "Sub-Section": sub_section,
-                            }
-                        )
-            logger.info(
-                f"Successfully parsed chapter: {chapter_num} with {len(lines)} entries"
-            )
-        except Exception as e:
-            logger.error(f"Error parsing chapter {chapter_num}: {str(e)}")
-
-    def parse_appendix_text(app_num, app_title, text):
-        logger.info(f"Parsing appendix: {app_num} - {app_title}")
-        prompt = f"""
-            You are a data extraction assistant. Below is a section of a regulatory document appendix in plain text format, extracted from a PDF. Extract all points, including nested sub-points (e.g., 1., a), i)), and format them as a hierarchical list using bullet points. Preserve the numbering/lettering and include all text for each point. Return the result as a plain text string with each point on a new line.
-
-            Text:
-            {text}
-
-            Example output:
-            - 1. First point text
-            - 1.a) Sub-point text
-            - 1.a)i) Sub-sub-point text
-        """
-        try:
-            response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a precise data extraction assistant.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=2000,
-            )
-            points = response.choices[0].message.content.strip()
-            rows.append(
-                {
-                    "Chapter": f"Appendix {app_num} - {app_title}",
-                    "Section No.": "",
-                    "Section": "",
-                    "Sub-Section": points,
-                }
-            )
-            logger.info(f"Successfully parsed appendix: {app_num}")
-        except Exception as e:
-            logger.error(f"Error parsing appendix {app_num}: {str(e)}")
-
-    chapters = chapter_re.finditer(raw_data)
-    chapter_starts = [(m.start(), m.group(1), m.group(2).strip()) for m in chapters]
-    chapter_starts.append((len(raw_data), None, None))
-
-    for i in range(len(chapter_starts) - 1):
-        start_pos, chapter_num, chapter_title = chapter_starts[i]
-        end_pos = chapter_starts[i + 1][0]
-        chapter_text = raw_data[start_pos:end_pos]
-        if chapter_num:
-            parse_chapter_text(chapter_num, chapter_title, chapter_text)
-
-    appendices = appendix_re.finditer(raw_data)
-    for app in appendices:
-        app_num = app.group(1)
-        app_title = app.group(2).strip()
-        app_end = raw_data[app.start() :].find("# Appendix", 1)
-        app_text = (
-            raw_data[app.start() : app.start() + app_end]
-            if app_end != -1
-            else raw_data[app.start() :]
-        )
-        parse_appendix_text(app_num, app_title, app_text)
-
-    logger.info(f"Completed RBI directions parsing with {len(rows)} rows")
-    return pd.DataFrame(rows, columns=columns)
-
-
-# Function to enhance CSV with Summary and Action Item
-def enhance_csv_with_summary_and_action(csv_path):
-    logger.info(f"Enhancing CSV with Summary and Action Item: {csv_path}")
-    try:
-        df = pd.read_csv(csv_path)
-        if df.empty:
-            logger.error(f"CSV is empty: {csv_path}")
-            return False
-
-        # Initialize new columns
-        df["Summary"] = ""
-        df["Action Item"] = ""
-        if "Due date" not in df.columns:
-            df["Due date"] = ""
-        df["Due date"] = df["Due date"].astype(str)
-
-        for index, row in df.iterrows():
-            sub_section = row["Sub Section"]
-            if pd.isna(sub_section) or not sub_section.strip():
-                logger.warning(f"Empty Sub-Section at index {index}")
-                continue
-
-            prompt = f"""
-                You are a compliance assistant. Below is a subsection from a regulatory document. Your task is to:
-                1. Summarize the subsection in one concise sentence (max 50 words).
-                2. Provide a specific action item to address the subsection's requirements.
-                3. Extract the due date for compliance, if mentioned. If the due date is a specific date, return it in YYYY-MM-DD format. If the due date is relative (e.g., 'within 6 months', '30 days after notification', 'by the end of the quarter'), calculate and return the exact date in YYYY-MM-DD format if possible, using the context of the subsection or today's date as a reference. If you cannot determine an exact date, return 'N/A'.
-
-                Sub-Section:
-                {sub_section}
-
-                Return the result as a plain text string in the format:
-                Summary: <one-line summary>|Action Item: <specific action>|Due date: <YYYY-MM-DD or N/A>
-
-                Example output:
-                Summary: Entities must implement multi-factor authentication by 2023.|Action Item: Deploy MFA across all systems by Q4 2023.|Due date: 2023-12-31
-                Summary: Compliance must be achieved within 6 months of notification.|Action Item: Complete all required changes within 6 months.|Due date: 2024-11-15
-            """
-            try:
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a precise compliance assistant.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=120,
-                )
-                result = response.choices[0].message.content.strip()
-                if result.count("|") == 2:
-                    summary, action, due = result.split("|", 2)
-                    df.at[index, "Summary"] = summary.replace("Summary:", "").strip()
-                    df.at[index, "Action Item"] = action.replace(
-                        "Action Item:", ""
-                    ).strip()
-                    due_value = due.replace("Due date:", "").strip()
-                    # Try to parse and standardize the date
-                    if due_value and due_value.upper() != "N/A":
-                        try:
-                            parsed_date = dateutil.parser.parse(due_value, fuzzy=True)
-                            due_value = parsed_date.strftime("%Y-%m-%d")
-                        except Exception:
-                            pass  # Keep original if parsing fails
-                    df.at[index, "Due date"] = due_value
-                else:
-                    logger.warning(
-                        f"Invalid response format for index {index}: {result}"
-                    )
-            except Exception as e:
-                logger.error(f"Error processing Sub-Section at index {index}: {str(e)}")
-
-        # Save updated CSV
-        df.to_csv(csv_path, index=False, encoding="utf-8")
-        logger.info(f"Successfully enhanced CSV with {len(df)} rows")
-        return True
-    except Exception as e:
-        logger.error(f"Error enhancing CSV {csv_path}: {str(e)}")
-        return False
+notice_status = {}  # notice_id: {status, last_updated, filename}
 
 
 @app.route("/")
@@ -281,18 +70,27 @@ def upload_file():
         logger.error("No selected file")
         return jsonify({"error": "No selected file"}), 400
     if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        csv_filename = os.path.splitext(filename)[0] + ".csv"
-        logger.info(f"Saving uploaded file: {filename}")
+        # Add timestamp and UUID to filename
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        notice_id = str(uuid.uuid4())
+        base, ext = os.path.splitext(secure_filename(file.filename))
+        unique_filename = f"{base}_{timestamp}_{notice_id}{ext}"
+        file_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
+        csv_filename = f"{base}_{timestamp}_{notice_id}.csv"
+        logger.info(f"Saving uploaded file: {unique_filename}")
         file.save(file_path)
 
         file_status[csv_filename] = "Processing"
+        notice_status[notice_id] = {
+            "status": "Pending Approval",
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "filename": csv_filename,
+        }
         logger.info(f"Set status to Processing for {csv_filename}")
 
         def process_file():
             try:
-                logger.info(f"Extracting text from PDF: {filename}")
+                logger.info(f"Extracting text from PDF: {unique_filename}")
                 with open(file_path, "rb") as file:
                     pdf_reader = PyPDF2.PdfReader(file)
                     text = ""
@@ -302,16 +100,16 @@ def upload_file():
                             text += page_text + "\n"
                         else:
                             logger.warning(
-                                f"Empty text extracted from page in {filename}"
+                                f"Empty text extracted from page in {unique_filename}"
                             )
 
                 if not text.strip():
-                    logger.error(f"No text extracted from PDF: {filename}")
+                    logger.error(f"No text extracted from PDF: {unique_filename}")
                     file_status[csv_filename] = "Failed"
                     return
 
                 txt_path = os.path.join(
-                    app.config["EXTRACTED_TEXT"], os.path.splitext(filename)[0] + ".txt"
+                    app.config["EXTRACTED_TEXT"], f"{base}_{timestamp}_{notice_id}.txt"
                 )
                 logger.info(f"Saving extracted text to: {txt_path}")
                 with open(txt_path, "w", encoding="utf-8") as f:
@@ -325,36 +123,37 @@ def upload_file():
                 df = parse_rbi_directions(raw_data)
 
                 if df.empty:
-                    logger.error(f"Parsed DataFrame is empty for {filename}")
+                    logger.error(f"Parsed DataFrame is empty for {unique_filename}")
                     file_status[csv_filename] = "Failed"
                     return
                 logger.info(f"Parsed DataFrame contains {len(df)} rows")
 
                 csv_path = os.path.join(app.config["EXCEL_SHEETS"], csv_filename)
                 logger.info(f"Saving initial CSV to: {csv_path}")
-                df.to_csv(csv_path, index=False, encoding="utf-8")
+                df.to_csv(csv_path, index=False, encoding="utf-8", na_rep="")
 
                 structured_data = []
-                document_id = os.path.splitext(filename)[0]
+                document_id = f"{base}_{timestamp}_{notice_id}"
                 for _, row in df.iterrows():
                     structured_data.append(
                         [
                             document_id,
                             row["Chapter"],
+                            row["Section No."],
                             row["Section"],
                             row["Sub-Section"],
-                            row["Sub-Section"],
-                            "Compliance required",
-                            "",  # Placeholder for Due date, to be filled by LLM
-                            "Regulated Entities",
-                            "Compliance Team",
-                            "",  # Placeholder for Summary
-                            "",  # Placeholder for Action Item
+                            "",  # Summary
+                            "",  # Action Item
+                            "",  # Due date
+                            "",  # Periodicity
+                            "No",  # Marked as Completed
+                            "Not Started",  # Work Status
+                            "",  # Role Assigned To
                         ]
                     )
 
                 if not structured_data:
-                    logger.error(f"No structured data generated for {filename}")
+                    logger.error(f"No structured data generated for {unique_filename}")
                     file_status[csv_filename] = "Failed"
                     return
                 logger.info(f"Generated {len(structured_data)} rows of structured data")
@@ -364,23 +163,26 @@ def upload_file():
                     writer = csv.writer(csvfile)
                     writer.writerow(
                         [
-                            "Document_ID",
+                            "Document ID",
                             "Chapter",
+                            "Section No.",
                             "Section",
-                            "Sub Section",
-                            "Description",
-                            "Compliance_Requirements",
-                            "Due date",
-                            "Applicability",
-                            "Role Assigned To",
+                            "Sub-Section",
                             "Summary",
                             "Action Item",
+                            "Due date",
+                            "Periodicity",
+                            "Marked as Completed",
+                            "Work Status",
+                            "Role Assigned To",
                         ]
                     )
                     writer.writerows(structured_data)
 
-                # Enhance CSV with Summary and Action Item
-                logger.info(f"Enhancing CSV with summary and action items: {csv_path}")
+                # Enhance CSV with Summary, Action Item, Due date, and Periodicity
+                logger.info(
+                    f"Enhancing CSV with summary, action items, and periodicity: {csv_path}"
+                )
                 if not enhance_csv_with_summary_and_action(csv_path):
                     logger.error(f"Failed to enhance CSV: {csv_path}")
                     file_status[csv_filename] = "Failed"
@@ -392,18 +194,24 @@ def upload_file():
                     file_status[csv_filename] = "Failed"
                     return
                 csv_size = os.path.getsize(csv_path)
-                if csv_size < 100:  # Arbitrary small size to catch empty-ish files
+                if csv_size < 100:
                     logger.error(
                         f"CSV file is suspiciously small ({csv_size} bytes): {csv_path}"
                     )
                     file_status[csv_filename] = "Failed"
                     return
 
-                logger.info(f"File {filename} processed successfully")
+                logger.info(f"File {unique_filename} processed successfully")
                 file_status[csv_filename] = "Completed"
+                notice_status[notice_id]["last_updated"] = datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
             except Exception as e:
-                logger.error(f"Error processing file {filename}: {str(e)}")
+                logger.error(f"Error processing file {unique_filename}: {str(e)}")
                 file_status[csv_filename] = "Failed"
+                notice_status[notice_id]["last_updated"] = datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
 
         threading.Thread(target=process_file, daemon=True).start()
 
@@ -411,8 +219,9 @@ def upload_file():
             jsonify(
                 {
                     "message": "File upload started",
-                    "filename": filename,
+                    "filename": unique_filename,
                     "csv_path": csv_filename,
+                    "notice_id": notice_id,
                 }
             ),
             202,
@@ -426,10 +235,24 @@ def list_files():
     logger.info("Listing CSV files")
     files = []
     try:
-        for filename in os.listdir(app.config["EXCEL_SHEETS"]):
+        excel_dir = app.config["EXCEL_SHEETS"]
+        for filename in os.listdir(excel_dir):
             if filename.endswith(".csv"):
-                file_path = os.path.join(app.config["EXCEL_SHEETS"], filename)
+                file_path = os.path.join(excel_dir, filename)
                 document_id = os.path.splitext(filename)[0]
+                found_notice_id = None
+                for notice_id, notice_info in notice_status.items():
+                    if notice_info["filename"] == filename:
+                        found_notice_id = notice_id
+                        break
+                if found_notice_id:
+                    approval_status = notice_status[found_notice_id]["status"]
+                    last_updated = notice_status[found_notice_id]["last_updated"]
+                else:
+                    approval_status = "Pending Approval"
+                    last_updated = datetime.fromtimestamp(
+                        os.path.getctime(file_path)
+                    ).strftime("%Y-%m-%d %H:%M:%S")
                 files.append(
                     {
                         "filename": filename,
@@ -439,6 +262,9 @@ def list_files():
                         ).strftime("%Y-%m-%d %H:%M:%S"),
                         "size": os.path.getsize(file_path),
                         "status": file_status.get(filename, "Completed"),
+                        "notice_id": found_notice_id or document_id,
+                        "approval_status": approval_status,
+                        "last_updated": last_updated,
                     }
                 )
         logger.info(f"Found {len(files)} CSV files")
@@ -461,17 +287,18 @@ def get_file_content(filename):
             logger.error(f"File is empty: {filename}")
             return jsonify({"error": "File is empty"}), 400
         expected_columns = [
-            "Document_ID",
+            "Document ID",
             "Chapter",
+            "Section No.",
             "Section",
-            "Sub Section",
-            "Description",
-            "Compliance_Requirements",
-            "Due date",
-            "Applicability",
-            "Role Assigned To",
+            "Sub-Section",
             "Summary",
             "Action Item",
+            "Due date",
+            "Periodicity",
+            "Marked as Completed",
+            "Work Status",
+            "Role Assigned To",
         ]
         if not all(col in df.columns for col in expected_columns):
             logger.error(f"Invalid CSV structure: {filename}")
@@ -499,17 +326,18 @@ def view_file(filename):
             logger.error(f"File is empty: {filename}")
             return render_template("error.html", message="File is empty"), 400
         expected_columns = [
-            "Document_ID",
+            "Document ID",
             "Chapter",
+            "Section No.",
             "Section",
-            "Sub Section",
-            "Description",
-            "Compliance_Requirements",
-            "Due date",
-            "Applicability",
-            "Role Assigned To",
+            "Sub-Section",
             "Summary",
             "Action Item",
+            "Due date",
+            "Periodicity",
+            "Marked as Completed",
+            "Work Status",
+            "Role Assigned To",
         ]
         if not all(col in df.columns for col in expected_columns):
             logger.error(f"Invalid CSV structure: {filename}")
@@ -608,14 +436,12 @@ def get_metrics():
             len(df["filename"].unique()) if "filename" in df.columns else 0
         )
 
-        # Calculate daily uploads for the past 7 days
         daily_uploads = {}
         for date in dates:
             date_obj = datetime.strptime(date, "%Y-%m-%d").date()
             count = len(df[df["date"] == date_obj]) if "date" in df.columns else 0
             daily_uploads[date] = count
 
-        # Calculate status distribution
         status_counts = (
             df["status"].value_counts().to_dict() if "status" in df.columns else {}
         )
@@ -639,6 +465,114 @@ def get_metrics():
     except Exception as e:
         logger.error(f"Error calculating metrics: {str(e)}")
         return jsonify({"error": f"Failed to calculate metrics: {str(e)}"}), 500
+
+
+@app.route("/api/notices", methods=["GET"])
+def list_notices():
+    logger.info("Listing all notices for approval table")
+    notices = []
+    try:
+        excel_dir = app.config["EXCEL_SHEETS"]
+        for filename in os.listdir(excel_dir):
+            if filename.endswith(".csv"):
+                file_path = os.path.join(excel_dir, filename)
+                found_notice_id = None
+                for notice_id, notice_info in notice_status.items():
+                    if notice_info["filename"] == filename:
+                        found_notice_id = notice_id
+                        break
+                if found_notice_id:
+                    status = notice_status[found_notice_id]["status"]
+                    last_updated = notice_status[found_notice_id]["last_updated"]
+                else:
+                    status = "Pending Approval"
+                    last_updated = datetime.fromtimestamp(
+                        os.path.getctime(file_path)
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                notices.append(
+                    {
+                        "notice_id": found_notice_id or os.path.splitext(filename)[0],
+                        "status": status,
+                        "last_updated": last_updated,
+                        "filename": filename,
+                    }
+                )
+        logger.info(f"Found {len(notices)} notices")
+    except Exception as e:
+        logger.error(f"Error listing notices: {str(e)}")
+        return jsonify({"error": "Failed to list notices"}), 500
+    return jsonify(notices)
+
+
+@app.route("/api/approve_notice/<notice_id>", methods=["POST"])
+def approve_notice(notice_id):
+    logger.info(f"Updating approval status for notice: {notice_id}")
+    filename = None
+    for f in os.listdir(app.config["EXCEL_SHEETS"]):
+        if f.startswith(notice_id) or os.path.splitext(f)[0] == notice_id:
+            filename = f
+            break
+    if notice_id not in notice_status:
+        if filename:
+            file_path = os.path.join(app.config["EXCEL_SHEETS"], filename)
+            notice_status[notice_id] = {
+                "status": "Pending Approval",
+                "last_updated": datetime.fromtimestamp(
+                    os.path.getctime(file_path)
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "filename": filename,
+            }
+        else:
+            logger.error(f"Notice ID not found: {notice_id}")
+            return jsonify({"error": "Notice ID not found"}), 404
+    try:
+        data = request.json
+        new_status = data.get("status")
+        if new_status not in ["Pending Approval", "Approved", "Rejected"]:
+            logger.error(f"Invalid status: {new_status}")
+            return jsonify({"error": "Invalid status"}), 400
+        notice_status[notice_id]["status"] = new_status
+        notice_status[notice_id]["last_updated"] = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        logger.info(f"Notice {notice_id} status updated to {new_status}")
+        return jsonify({"message": "Notice status updated successfully"})
+    except Exception as e:
+        logger.error(f"Error updating notice {notice_id}: {str(e)}")
+        return jsonify({"error": f"Failed to update notice: {str(e)}"}), 500
+
+
+@app.route("/api/update_work_status/<filename>", methods=["POST"])
+def update_work_status(filename):
+    logger.info(f"Updating work status for file: {filename}")
+    file_path = os.path.join(app.config["EXCEL_SHEETS"], filename)
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {filename}")
+        return jsonify({"error": "File not found"}), 404
+    try:
+        data = request.json
+        row_index = data.get("row_index")
+        marked_completed = data.get("marked_completed")
+        work_status = data.get("work_status")  # New field for Work Status
+        if row_index is None:
+            logger.error("Missing row_index in request")
+            return jsonify({"error": "Missing row_index"}), 400
+        df = pd.read_csv(file_path)
+        if row_index < 0 or row_index >= len(df):
+            logger.error(f"Invalid row_index: {row_index}")
+            return jsonify({"error": "Invalid row_index"}), 400
+        if marked_completed is not None:
+            df.at[row_index, "Marked as Completed"] = marked_completed
+        if work_status is not None:
+            df.at[row_index, "Work Status"] = work_status
+        df.to_csv(file_path, index=False, encoding="utf-8")
+        logger.info(
+            f"Successfully updated work status for row {row_index} in {filename}"
+        )
+        return jsonify({"message": "Work status updated successfully"})
+    except Exception as e:
+        logger.error(f"Error updating work status for file {filename}: {str(e)}")
+        return jsonify({"error": f"Failed to update work status: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
