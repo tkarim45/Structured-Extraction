@@ -305,3 +305,54 @@ def enhance_csv_with_summary_and_action(csv_path):
     except Exception as e:
         logger.error(f"Error enhancing CSV {csv_path}: {str(e)}")
         return False
+
+
+def extract_document_summary_and_action(raw_data):
+    """
+    Use GPT to extract a single summary and action item for the entire document.
+    Returns a dict: { 'summary': ..., 'action_item': ... }
+    """
+    logger.info("Extracting document-level summary and action item")
+    prompt = f"""
+        **Situation**
+        You are a compliance assistant working with regulatory documents. Your job is to provide a concise, high-level summary and a single most important action item for the entire document, based on the full text provided.
+
+        **Task**
+        1. Read the entire document text.
+        2. Write a single, clear summary of the document's overall purpose and scope.
+        3. Identify and list all the action item that an organization must take to comply with the document as a whole (not section-specific).
+
+        **Output Format**
+        Summary: <one-line summary>\nAction Item: <one-line action item>
+
+        **Example**
+        Summary: This document outlines the regulatory requirements for IT outsourcing in financial institutions.\nAction Item: Establish a comprehensive IT outsourcing policy and ensure all vendors comply with regulatory standards.
+
+        Document Text:
+        {raw_data}
+    """
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a precise compliance assistant.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        result = response.choices[0].message.content.strip()
+        summary = ""
+        action_item = ""
+        for line in result.splitlines():
+            if line.startswith("Summary:"):
+                summary = line.replace("Summary:", "").strip()
+            elif line.startswith("Action Item:"):
+                action_item = line.replace("Action Item:", "").strip()
+        logger.info(f"Document summary: {summary}")
+        logger.info(f"Document action item: {action_item}")
+        return {"summary": summary, "action_item": action_item}
+    except Exception as e:
+        logger.error(f"Error extracting document summary/action: {str(e)}")
+        return {"summary": "N/A", "action_item": "N/A"}

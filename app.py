@@ -16,6 +16,7 @@ from utils.helpers import (
     allowed_file,
     parse_rbi_directions,
     enhance_csv_with_summary_and_action,
+    extract_document_summary_and_action,
 )
 import uuid
 
@@ -114,6 +115,15 @@ def upload_file():
                 logger.info(f"Saving extracted text to: {txt_path}")
                 with open(txt_path, "w", encoding="utf-8") as f:
                     f.write(text)
+
+                # --- Extract document-level summary and action item ---
+                doc_summary_action = extract_document_summary_and_action(text)
+                notice_status[notice_id]["summary"] = doc_summary_action.get(
+                    "summary", ""
+                )
+                notice_status[notice_id]["action_item"] = doc_summary_action.get(
+                    "action_item", ""
+                )
 
                 logger.info(f"Reading text from: {txt_path}")
                 with open(txt_path, "r", encoding="utf-8") as file:
@@ -484,17 +494,23 @@ def list_notices():
                 if found_notice_id:
                     status = notice_status[found_notice_id]["status"]
                     last_updated = notice_status[found_notice_id]["last_updated"]
+                    summary = notice_status[found_notice_id].get("summary", "")
+                    action_item = notice_status[found_notice_id].get("action_item", "")
                 else:
                     status = "Pending Approval"
                     last_updated = datetime.fromtimestamp(
                         os.path.getctime(file_path)
                     ).strftime("%Y-%m-%d %H:%M:%S")
+                    summary = ""
+                    action_item = ""
                 notices.append(
                     {
                         "notice_id": found_notice_id or os.path.splitext(filename)[0],
                         "status": status,
                         "last_updated": last_updated,
                         "filename": filename,
+                        "summary": summary,
+                        "action_item": action_item,
                     }
                 )
         logger.info(f"Found {len(notices)} notices")

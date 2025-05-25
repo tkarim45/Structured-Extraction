@@ -240,6 +240,8 @@ document.addEventListener("DOMContentLoaded", () => {
           </select>
         </td>
         <td>${notice.last_updated}</td>
+        <td>${notice.summary || ""}</td>
+        <td>${notice.action_item || ""}</td>
         <td><button class="approve-notice-btn" data-notice-id="${notice.notice_id}">Update</button></td>
       `;
       tbody.appendChild(row);
