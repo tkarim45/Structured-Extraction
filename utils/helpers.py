@@ -310,35 +310,43 @@ def enhance_csv_with_summary_and_action(csv_path):
 
 def extract_document_summary_and_action(raw_data):
     logger.info("Extracting document-level summary and action item")
+    logger.info(f"Raw data preview: {raw_data[:100]}")
+
+    if not raw_data.strip() or len(raw_data) < 100:
+        logger.warning("Raw data is empty or too short, using fallback")
+        return {
+            "summary": "The document appears to be a regulatory guideline, but specific content could not be extracted due to formatting or extraction issues.",
+            "action_item": "Conduct a manual review of the document to identify and implement key compliance requirements.",
+        }
+
     prompt = f"""
         **Situation**
-        You are a compliance assistant working with regulatory documents. Your job is to provide a concise, high-level, and detailed summary and a single most important action item for the entire document, based on the full text provided.
+        You are a compliance assistant working with regulatory documents converted from PDF to plain text. Your job is to provide a concise, high-level, and detailed summary and a single most important action item for the entire document, even if the structure (e.g., chapters) is unclear or missing.
 
         **Task**
         1. Read the entire document text.
-        2. Write a very detailed, clear, and specific summary of the document's overall purpose, scope, and key requirements. The summary must be at least 50 words and should not be generic or empty.
-        3. Identify and list the single most important action item that an organization must take to comply with the document as a whole (not section-specific). The action item must be actionable, specific, and detailed, not generic or empty. If there are multiple, pick the most critical one and state it clearly.
+        2. Write a detailed summary (200-500 words) of the document's purpose, scope, and key requirements. If no clear structure (e.g., chapters) is present, assume the document is a single cohesive regulatory guideline and summarize its overall intent.
+        3. Identify all the, specific, and actionable item for compliance, prioritizing the most critical requirement for the organization.
+
+        **Objective**
+        Enable organizations to understand the document’s regulatory requirements and take appropriate compliance actions, even for poorly structured or short documents.
+
+        **Knowledge**
+        - Regulatory documents may lack explicit chapter names or have inconsistent formatting due to PDF extraction.
+        - If no chapters are identified, treat the document as a single unit ("Main Document") and summarize its key points.
+        - Focus on regulatory intent, compliance obligations, and actionable steps.
+        - Avoid generic or empty responses (e.g., "N/A", "Not specified").
 
         **Output Format (MANDATORY)**
-        Summary: <detailed summary, at least 50 words>
-        Action Item: <detailed, specific, actionable item>
+        Summary: <detailed summary, 200-500 words>
+        Action Item: <specific, actionable item, multiple items separated by new lines>
 
-        **STRICT REQUIREMENTS**
-        - Do NOT leave the summary or action item empty or generic (e.g., "N/A", "Not specified", "No action required").
-        - If the document is very short or unclear, infer a plausible summary and action item based on the available content and context.
-        - Your output MUST always include both fields, and both must be detailed and meaningful.
-
-        **Good Example**
-        Summary: This document provides comprehensive guidelines for operational risk management in financial institutions, emphasizing the need for robust internal controls, risk assessment frameworks, and regular monitoring. It outlines the responsibilities of senior management, the importance of business continuity planning, and the integration of risk management into all business processes. The document also addresses regulatory expectations, reporting requirements, and the need for ongoing staff training to ensure compliance and resilience against operational disruptions.
-        Action Item: Establish and implement a comprehensive operational risk management framework, including regular risk assessments, staff training programs, and business continuity plans, to ensure full compliance with regulatory requirements and enhance organizational resilience.
-
-        **Bad Example**
-        Summary: Guidelines for risk management.
-        Action Item: Follow the guidelines.
-
-        **Output Format (MANDATORY)**
-        Summary: <detailed summary, at least 500 words>
-        Action Item: <detailed, specific, actionable item>
+        **Examples**
+        Summary: The document provides guidelines for operational risk management, emphasizing robust internal controls, risk assessments, and business continuity planning for financial institutions. It outlines senior management responsibilities and regulatory reporting requirements to ensure resilience against disruptions.
+        Action Item: - Implement a comprehensive operational risk management framework with regular risk assessments and business continuity plans to meet regulatory requirements.
+        - Review and document title provisions.
+        - Deploy MFA across all systems by Q4 2023.
+        - Conduct a manual review to identify and implement compliance actions.
 
         Document Text:
         {raw_data}
@@ -355,19 +363,37 @@ def extract_document_summary_and_action(raw_data):
             ],
         )
         result = response.choices[0].message.content.strip()
-        logger.info(f"OpenAI response for document: {result}")
+        logger.info(f"OpenAI raw response: {result}")
+
+        # Initialize defaults
         summary = ""
         action_item = ""
-        for line in result.splitlines():
-            if line.startswith("Summary:"):
-                summary = line.replace("Summary:", "").strip()
-            elif line.startswith("Action Item:"):
-                action_item = line.replace("Action Item:", "").strip()
-        # Ensure neither is empty
-        if not summary:
-            summary = "N/A"
-        if not action_item:
-            action_item = "N/A"
+
+        # Use regex to extract summary and action item, handling Markdown and multi-line content
+        summary_match = re.search(
+            r"(?:\*\*Summary\*\*:|Summary:)\s*(.*?)(?=(?:\*\*Action Item\*\*:|Action Item:|$))",
+            result,
+            re.DOTALL | re.IGNORECASE,
+        )
+        action_match = re.search(
+            r"(?:\*\*Action Item\*\*:|Action Item:)\s*(.*)",
+            result,
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        if summary_match:
+            summary = summary_match.group(1).strip()
+        if action_match:
+            action_item = action_match.group(1).strip()
+
+        # Fallback if either field is empty or generic
+        if not summary or summary.lower() in ["n/a", "not specified", ""]:
+            summary = "The document outlines regulatory requirements, but specific details could not be extracted due to formatting issues."
+        if not action_item or action_item.lower() in ["n/a", "not specified", ""]:
+            action_item = (
+                "Conduct a manual review to identify and implement compliance actions."
+            )
+
         logger.info(f"Document summary: {summary}")
         logger.info(f"Document action item: {action_item}")
         return {"summary": summary, "action_item": action_item}
