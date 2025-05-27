@@ -33,38 +33,48 @@ def parse_rbi_directions(raw_data):
         logger.info("Parsing entire document")
         prompt = f"""
             **Situation**
-            You are a data extraction assistant working with regulatory documents converted from PDF to plain text. These documents may have a hierarchical structure (chapters, sections, subsections, sub-subsections, appendices) but may lack explicit chapter names or have inconsistent formatting due to PDF extraction issues.
+            You are a data extraction assistant processing a regulatory document from the Reserve Bank of India (RBI), titled "Guidance Note on Operational Risk Management and Operational Resilience," converted from PDF to plain text. The document contains English and Hindi text, metadata (e.g., department address, contact details, signatures), and a structured hierarchy of chapters, sections, subsections, principles, and annexes. Your task is to extract the entire hierarchical structure, capturing every single word, sentence, and detail of the English regulatory content, and format it as pipe-delimited strings with four fields: Chapter, Section No., Section, and Sub-Section.
 
             **Task**
-            Extract the complete hierarchical structure from the provided text, identifying all chapters, sections, subsections, sub-subsections, and appendices. If no explicit chapter names are present (e.g., no "Chapter I" or "Appendix"), treat the entire document as a single chapter named "Main Document" or infer chapter-like divisions based on major headings, numbering, or content breaks. Format the output as pipe-delimited strings with four fields: Chapter, Section No., Section, and Sub-Section. The Sub-Section field should include all nested subsection text in a hierarchical bullet-point format. If no subsections exist, use an empty string for Sub-Section.
+            1. Extract the complete hierarchical structure, identifying all chapters, sections, subsections, principles, and annexes. If no explicit chapter names are present (e.g., "Chapter I"), infer chapters from major headings (e.g., "1. Preliminary," "Annex") or use "Main Document" for sections without a clear chapter title.
+            2. Map the document's structure to the output format:
+               - **Chapter**: Major heading or inferred chapter (e.g., "Preliminary," "Annex," or "Main Document").
+               - **Section No.**: Numeric identifier of the section (e.g., "1," "4").
+               - **Section**: Section title or description (e.g., "Purpose," "Governance and Risk Culture").
+               - **Sub-Section**: Full text of all nested subsections (e.g., "1.1," "4.1") and principles (e.g., "Principle 1") under the section, in a hierarchical bullet-point list using hyphens (e.g., `- 1.1 Text - 1.1.1 Sub-text`). Include every single word, sentence, and detail without any omission, truncation, or ellipses ('...'). If no subsections exist, use an empty string.
+            3. Exclude metadata (e.g., department address, contact details, email, fax, signatures, "Yours faithfully") and Hindi text (e.g., "हिंदंी आसान है"). Focus solely on English regulatory content, including sections, subsections, principles, and annexes.
+            4. Output each entry as a pipe-delimited string on a new line, starting with "Chapter:". Ensure four fields per line, capturing all subsection and principle text in the Sub-Section field without missing any content.
 
             **Objective**
-            Create a structured representation of the document that preserves the legal hierarchy and numbering, suitable for downstream processing, even for documents with missing or unclear chapter markers.
+            Produce a structured representation of the document’s regulatory content, preserving the legal hierarchy and every single word, sentence, and detail of the English text, suitable for Excel export, while excluding irrelevant metadata and non-English text.
 
             **Knowledge**
-            - Chapters typically follow patterns like "Chapter - I Preliminary" or "CHAPTER I - Preliminary", but may be absent or implicit (e.g., a major heading or first significant text block).
-            - Appendices follow patterns like "Appendix - I [Title]" or may appear as standalone sections.
-            - Sections are often identified by numbers (e.g., '1.', '2.') or headings.
-            - Subsections use labels like 'a)', 'i)', '1.1', etc., and may have deeper levels (e.g., 'i)', 'A)').
-            - Use context clues (indentation, numbering, content flow, or major text breaks) to infer hierarchy if formatting is inconsistent or chapter names are missing.
-            - Output format: `Chapter: <chapter or appendix title or 'Main Document'>|Section No.: <number or identifier>|Section: <title or text>|Sub-Section: <nested subsection text or empty>`
-            - For Sub-Section, use a bullet-point list with hyphens (e.g., `- a) Text - i) Sub-text`).
-            - Each entry must be on a new line and start with "Chapter:".
-            - Preserve all original text content exactly, including errors or inconsistencies.
-            - Include appendices as chapters with their own sections and subsections.
-            - If no clear structure is detected, treat the document as a single chapter ("Main Document") with sections inferred from numbering or headings.
+            - The document begins with metadata (e.g., RBI department details, date, reference number), followed by an Index listing sections (e.g., "1. Preliminary," "4. Governance and Risk Culture"), and the main content.
+            - Sections are numbered (e.g., "1. Purpose," "2. Application"), with subsections (e.g., "1.1," "1.2") and principles (e.g., "Principle 1" under "4. Governance and Risk Culture") treated as subsections.
+            - Principles are key requirements (e.g., "Principle 1- The Board of Directors should take the lead...") and must be included in full in the Sub-Section field.
+            - Annexes (e.g., "Annex") are treated as chapters with their own content.
+            - Use context clues (e.g., numbering, indentation, headings) to infer hierarchy if formatting is inconsistent due to PDF extraction.
+            - Output format: `Chapter: <chapter or annex title or 'Main Document'>|Section No.: <number>|Section: <title or text>|Sub-Section: <full nested subsection text or empty>`
+            - **CRITICAL**: Do NOT omit, truncate, or summarize any part of the regulatory content. Include every single word, sentence, and detail of subsections and principles, avoiding ellipses ('...') entirely.
+            - Preserve original wording, numbering, and punctuation exactly as in the document.
 
             **Examples**
             ```
-            Chapter: Main Document|Section No.: 1|Section: Introduction|Sub-Section: 
-            Chapter: Main Document|Section No.: 2|Section: Requirements|Sub-Section: - a) Compliance details - b) Further details
-            Chapter: Appendix I - Cloud Computing|Section No.: 1|Section: Cloud Requirements|Sub-Section: - 1.1 Requirement text - 1.1.1 Sub-requirement
+            Chapter: Preliminary|Section No.: 1|Section: Purpose|Sub-Section: - 1.1 Operational Risk is inherent in all banking/financial products, services, activities, processes, and systems. Effective management of Operational Risk is an integral part of the Regulated Entities’ (REs) risk management framework. Sound Management of Operational Risk shows the overall effectiveness of the Board of Directors and Senior Management in administering the RE’s portfolio of products, services, activities, processes, and systems. - 1.2 An operational disruption can threaten the viability of an RE, impact its customers and other market participants, and ultimately have an impact on financial stability. It can result from man-made causes, Information Technology (IT) threats (e.g., cyber-attacks, changes in technology, technology failures, etc), geopolitical conflicts, business disruptions, internal/external frauds, execution/delivery errors, third party dependencies, or natural causes (e.g., climate change, pandemic, etc.).
+            Chapter: Governance and Risk Culture|Section No.: 4|Section: Governance and Risk Culture|Sub-Section: - Principle 1- The Board of Directors should take the lead in establishing a strong risk management culture, implemented by Senior Management. The Board of Directors and Senior Management should establish a corporate culture guided by strong risk management, set standards and incentives for professional and responsible behaviour, and ensure that staff receives appropriate risk management and ethics training. - 4.1 REs with a strong culture of risk management and ethical business practices are less likely to experience damaging Operational Risk events and are better placed to effectively deal with those events that occur. The actions of the Board of Directors and Senior Management as well as the RE’s risk management policies, processes and systems provide the foundation for a sound risk management culture. - 4.2 The Board of Directors should establish a code of conduct or an ethics policy to address conduct risk...
+            Chapter: Annex|Section No.: 1|Section: Key Changes|Sub-Section: - Key changes carried out in the Guidance Note vis-à-vis repealed Guidance Note...
             ```
 
-            Your life depends on producing consistent output with four pipe-separated fields per line, starting with "Chapter:", even if no subsection text exists or chapter names are absent. Do not skip any sections, subsections, or appendices, and preserve the exact numbering and text.
+            **Output Format (MANDATORY)**
+            - Each entry starts with "Chapter:" followed by pipe-separated fields.
+            - Sub-Section contains all nested subsections and principles in a bullet-point list (e.g., `- 1.1 Text`).
+            - Capture every word and sentence in full; no ellipses or truncation allowed.
+            - Empty Sub-Section field if no subsections/principles exist.
 
-            Process the following text:
+            Process the following text exactly as provided, capturing every word and sentence of the English regulatory content, excluding metadata and Hindi text:
+            ```
             {text}
+            ```
         """
         try:
             response = openai_client.chat.completions.create(
